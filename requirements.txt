@@ -1,2 +1,6 @@
-streamlit
+streamlit==1.32.0
 yfinance
+pandas==2.2.2
+pandas_ta
+alpaca-trade-api
+scikit-learn
