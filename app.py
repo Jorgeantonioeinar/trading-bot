@@ -8,20 +8,29 @@ st.title("🚀 BOT SCALPING PRO")
 
 symbols_input = st.text_input("Acciones", "AAPL,TSLA,AMD")
 
-# EMA manual
 def ema(series, n):
     return series.ewm(span=n, adjust=False).mean()
 
 if st.button("🔍 Escanear"):
-    for sym in symbols_input.split(","):
-        df = yf.download(sym.strip(), period="1d", interval="1m")
 
-        if df.empty:
-            continue
+    symbols = [s.strip() for s in symbols_input.split(",")]
 
-        df["EMA9"] = ema(df["Close"], 9)
-        df["EMA20"] = ema(df["Close"], 20)
+    for sym in symbols:
+        try:
+            df = yf.download(sym, period="1d", interval="1m")
 
-        last = df.iloc[-1]
+            if df is None or df.empty:
+                st.warning(f"{sym} sin datos")
+                continue
 
-        st.write(f"{sym} → Precio: {round(last['Close'],2)} | EMA9: {round(last['EMA9'],2)}")
+            df["EMA9"] = ema(df["Close"], 9)
+            df["EMA20"] = ema(df["Close"], 20)
+
+            last = df.iloc[-1]
+
+            st.success(
+                f"{sym} | Precio: {round(last['Close'],2)} | EMA9: {round(last['EMA9'],2)}"
+            )
+
+        except Exception as e:
+            st.error(f"Error en {sym}: {e}")
