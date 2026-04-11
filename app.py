@@ -25,19 +25,23 @@ if st.button("🔍 Escanear"):
                     progress=False
                 )
 
+                # 🔴 Validación fuerte
                 if df is None or df.empty:
-                    st.warning(f"{sym} sin datos")
+                    st.warning(f"{sym} sin datos (mercado cerrado o sin info)")
                     continue
 
                 df["EMA9"] = ema(df["Close"], 9)
                 df["EMA20"] = ema(df["Close"], 20)
 
-                last = df.iloc[-1]
+                # 🔴 FORZAR VALORES ESCALARES (CLAVE)
+                ema9 = float(df["EMA9"].iloc[-1])
+                ema20 = float(df["EMA20"].iloc[-1])
+                precio = float(df["Close"].iloc[-1])
 
-                tendencia = "🟢 ALCISTA" if last["EMA9"] > last["EMA20"] else "🔴 BAJISTA"
+                tendencia = "🟢 ALCISTA" if ema9 > ema20 else "🔴 BAJISTA"
 
                 st.success(
-                    f"{sym} | Precio: {round(last['Close'],2)} | {tendencia}"
+                    f"{sym} | Precio: {round(precio,2)} | EMA9: {round(ema9,2)} | {tendencia}"
                 )
 
         except Exception as e:
