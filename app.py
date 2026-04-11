@@ -17,20 +17,29 @@ if st.button("🔍 Escanear"):
 
     for sym in symbols:
         try:
-            df = yf.download(sym, period="1d", interval="1m")
+            with st.spinner(f"Analizando {sym}..."):
 
-            if df is None or df.empty:
-                st.warning(f"{sym} sin datos")
-                continue
+                df = yf.download(
+                    sym,
+                    period="1d",
+                    interval="5m",
+                    progress=False
+                )
 
-            df["EMA9"] = ema(df["Close"], 9)
-            df["EMA20"] = ema(df["Close"], 20)
+                if df is None or df.empty:
+                    st.warning(f"{sym} sin datos")
+                    continue
 
-            last = df.iloc[-1]
+                df["EMA9"] = ema(df["Close"], 9)
+                df["EMA20"] = ema(df["Close"], 20)
 
-            st.success(
-                f"{sym} | Precio: {round(last['Close'],2)} | EMA9: {round(last['EMA9'],2)}"
-            )
+                last = df.iloc[-1]
+
+                tendencia = "ALCISTA" if last["EMA9"] > last["EMA20"] else "BAJISTA"
+
+                st.success(
+                    f"{sym} | Precio: {round(last['Close'],2)} | {tendencia}"
+                )
 
         except Exception as e:
-            st.error(f"Error en {sym}: {e}")
+            st.error(f"{sym} error: {str(e)}")
