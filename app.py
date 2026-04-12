@@ -6,8 +6,8 @@ from alpaca_trade_api import REST
 # ================================
 # 🔐 CONFIGURACIÓN SEGURA
 # ================================
-API_KEY = st.secrets["ALPACA_API_KEY"]
-API_SECRET = st.secrets["ALPACA_SECRET_KEY"]
+API_KEY = st.secrets["PKOKUMRZBCA2YJKVZIATSPGV5J"]
+API_SECRET = st.secrets["2UBriZpW7NooR1EvtowC63GcarFt7rEQFD9ofti9Ah6N"]
 BASE_URL = "https://paper-api.alpaca.markets"
 
 alpaca = REST(API_KEY, API_SECRET, BASE_URL)
