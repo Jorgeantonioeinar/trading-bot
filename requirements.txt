@@ -1,6 +1,6 @@
-streamlit
-yfinance
-pandas
-numpy
-pandas_ta
-alpaca-trade-api
+streamlit==1.32.0
+yfinance==0.2.37
+pandas==2.1.4
+numpy==1.26.4
+pandas_ta==0.3.14b0
+alpaca-trade-api==3.0.0
