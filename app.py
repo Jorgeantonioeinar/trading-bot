@@ -6,165 +6,146 @@ from alpaca.trading.client import TradingClient
 from alpaca.trading.requests import MarketOrderRequest, TakeProfitRequest, StopLossRequest
 from alpaca.trading.enums import OrderSide, TimeInForce
 
-st.set_page_config(page_title="THUNDER V76", layout="wide")
-st.title("⚡ THUNDER SCALPING DASHBOARD V76")
+# --- CONFIGURACIÓN DE PÁGINA ---
+st.set_page_config(page_title="THUNDER RADAR V80", layout="wide")
 
-# --- CLAVES DE ALPACA ---
+# --- ESTILOS PROFESIONALES ---
+st.markdown("""
+    <style>
+    .metric-card { background-color: #1e2130; padding: 15px; border-radius: 10px; border: 1px solid #4a4d61; }
+    .stButton>button { width: 100%; border-radius: 5px; height: 3em; background-color: #2e7d32; color: white; }
+    </style>
+    """, unsafe_allow_html=True)
+
+# --- CLAVES DE ACCESO (SILENCIOSAS) ---
 ALPACA_API_KEY = "PKOKUMRZBCA2YJKVZIATSPGV5J"
 ALPACA_SECRET_KEY = "2UBriZpW7NooR1EvtowC63GcarFt7rEQFD9ofti9Ah6N"
 
 @st.cache_resource
-def get_alpaca_client():
-    try:
-        return TradingClient(ALPACA_API_KEY, ALPACA_SECRET_KEY, paper=True)
-    except Exception as e:
-        return None
+def get_alpaca():
+    return TradingClient(ALPACA_API_KEY, ALPACA_SECRET_KEY, paper=True)
 
-client = get_alpaca_client()
+alpaca = get_alpaca()
 
-# --- CONFIGURACIÓN DE ESTRATEGIA ---
-st.sidebar.header("⚙️ Estrategia de Scalping")
-sensibilidad = st.sidebar.selectbox("Nivel de Sensibilidad", ["Nivel 1: Seguro (1% Riesgo)", "Nivel 2: Balanceado (2% Riesgo)", "Nivel 3: Agresivo (3% Riesgo)"])
+# --- BARRA LATERAL: CONFIGURACIÓN DEL RADAR ---
+st.sidebar.header("📡 CONFIGURACIÓN DEL RADAR")
+modo_radar = st.sidebar.radio("Modo de Búsqueda", ["Radar Automático (S&P 500 / NASDAQ)", "Radar Manual (Mis Tickers)"])
 
-if "Seguro" in sensibilidad:
-    sl_mult, tp_mult = 1.0, 2.0
-elif "Balanceado" in sensibilidad:
-    sl_mult, tp_mult = 1.5, 3.0
+col_p1, col_p2 = st.sidebar.columns(2)
+precio_min = col_p1.number_input("Precio Mín $", min_value=0.1, value=1.0)
+precio_max = col_p2.number_input("Precio Máx $", min_value=1.0, value=200.0)
+
+vol_min = st.sidebar.number_input("Volumen Mínimo Diario", value=500000)
+
+if modo_radar == "Radar Manual (Mis Tickers)":
+    tickers_input = st.sidebar.text_area("Ingresa hasta 30 tickers (separados por coma)", "AAPL, TSLA, NVDA, AMD, GME, AMC")
+    lista_tickers = [t.strip().upper() for t in tickers_input.split(",")]
 else:
-    sl_mult, tp_mult = 2.0, 5.0
+    # Lista pre-cargada de alta volatilidad para el radar automático
+    lista_tickers = ["AAPL", "MSFT", "GOOGL", "AMZN", "META", "TSLA", "NVDA", "AMD", "NFLX", "ADBE", 
+                     "BABA", "COIN", "MARA", "RIOT", "PLTR", "SOFI", "PFE", "DIS", "BA", "MSTR", 
+                     "UPST", "AFRM", "HOOD", "PYPL", "SQ", "UBER", "LYFT", "DKNG", "OPEN", "LCID"]
 
-# --- FUNCIONES MATEMÁTICAS ---
-def calcular_indicadores(df):
-    df = df.copy()
-    # VWAP
+# --- LÓGICA DE CALIFICACIÓN (1-10) ---
+def calificar_oportunidad(df):
+    actual = df.iloc[-1]
+    score_alcista = 0
+    score_bajista = 0
+    
+    # 1. RSI (Fuerza Relativa)
+    if 40 < actual['rsi'] < 60: score_alcista += 2
+    if actual['rsi'] > 60: score_alcista += 4
+    if actual['rsi'] < 30: score_bajista += 4
+    
+    # 2. VWAP & Medias
+    if actual['Close'] > actual['vwap']: score_alcista += 3
+    else: score_bajista += 3
+    
+    if actual['ema_9'] > actual['ema_20']: score_alcista += 3
+    else: score_bajista += 3
+    
+    return min(score_alcista, 10), min(score_bajista, 10)
+
+def procesar_datos(df):
+    # Indicadores Técnicos
     tp = (df['High'] + df['Low'] + df['Close']) / 3
     df['vwap'] = (tp * df['Volume']).cumsum() / df['Volume'].cumsum()
-    
-    # EMA
-    df['ema_9'] = df['Close'].ewm(span=9, adjust=False).mean()
-    df['ema_20'] = df['Close'].ewm(span=20, adjust=False).mean()
+    df['ema_9'] = df['Close'].ewm(span=9).mean()
+    df['ema_20'] = df['Close'].ewm(span=20).mean()
     
     # RSI
     delta = df['Close'].diff()
     gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
     loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
-    rs = gain / loss
-    df['rsi'] = 100 - (100 / (1 + rs))
+    df['rsi'] = 100 - (100 / (1 + (gain / loss)))
     
-    # ATR (Para Stop Loss Dinámico)
-    high_low = df['High'] - df['Low']
-    high_close = np.abs(df['High'] - df['Close'].shift())
-    low_close = np.abs(df['Low'] - df['Close'].shift())
-    ranges = pd.concat([high_low, high_close, low_close], axis=1)
-    true_range = np.max(ranges, axis=1)
-    df['atr'] = true_range.rolling(14).mean()
-    
+    # ATR para SL/TP
+    df['atr'] = (df['High'] - df['Low']).rolling(14).mean()
     return df
 
-# --- DESCARGA MASIVA ANTI-CUELGUES ---
-# El caché evita que la pantalla se congele cada vez que tocas un botón
-@st.cache_data(ttl=60)
-def obtener_datos_mercado():
-    tickers_list = ["NVDA", "TSLA", "AMD", "SMCI", "MSTR", "COIN", "PLTR", "GME", "AMC", "AAPL"]
-    tickers_str = " ".join(tickers_list)
-    # Descarga masiva: 1 sola petición a Yahoo Finance
-    data = yf.download(tickers_str, period="1d", interval="1m", group_by='ticker', prepost=True, progress=False)
-    return data, tickers_list
-
 # --- INTERFAZ PRINCIPAL ---
-col1, col2 = st.columns([2, 1])
+st.title("⚡ THUNDER PROFESSIONAL RADAR V80")
 
-with col1:
-    st.subheader("📊 Escáner de Oportunidades")
-    
-    with st.spinner("Conectando con el mercado..."):
-        data_all, tickers = obtener_datos_mercado()
-        
-    resultados = []
-    
-    for t in tickers:
-        try:
-            df = data_all[t].dropna()
-            if len(df) < 20: continue
-            
-            df = calcular_indicadores(df)
-            actual = df.iloc[-1]
-            precio = actual['Close']
-            
-            # Filtro para evitar errores matemáticos si el ATR es cero o nulo
-            atr = actual['atr'] if pd.notna(actual['atr']) and actual['atr'] > 0 else (precio * 0.005)
-            
-            estado = "Buscando..."
-            score = 0
-            
-            if precio > actual['vwap'] and actual['ema_9'] > actual['ema_20'] and actual['rsi'] > 50:
-                estado = "🚀 INICIO ALCISTA"
-                score = 5
-            elif actual['rsi'] > 80:
-                estado = "⚠️ SOBRECOMPRA"
-                score = -2
+if st.button("🚀 INICIAR ESCANEO DE MERCADO"):
+    with st.spinner("Analizando tendencias y volúmenes..."):
+        data_all = yf.download(lista_tickers, period="2d", interval="5m", group_by='ticker', progress=False)
+        resultados = []
+
+        for t in lista_tickers:
+            try:
+                df = data_all[t].dropna()
+                if df.empty or len(df) < 20: continue
                 
-            resultados.append({
-                "Ticker": t,
-                "Precio": round(precio, 2),
-                "Estado": estado,
-                "RSI": round(actual['rsi'], 1),
-                "Stop Loss": round(precio - (atr * sl_mult), 2),
-                "Take Profit": round(precio + (atr * tp_mult), 2),
-                "Score": score
-            })
-        except:
-            continue
+                precio = df.iloc[-1]['Close']
+                volumen = df.iloc[-1]['Volume']
+                
+                # Filtro de rango de precio
+                if not (precio_min <= precio <= precio_max): continue
+                
+                df = procesar_datos(df)
+                alcista, bajista = calificar_oportunidad(df)
+                
+                atr = df.iloc[-1]['atr']
+                
+                resultados.append({
+                    "Ticker": t,
+                    "Precio": round(precio, 2),
+                    "Calificación Alcista": f"{alcista}/10",
+                    "Calificación Bajista": f"{bajista}/10",
+                    "RSI": round(df.iloc[-1]['rsi'], 1),
+                    "Volumen": f"{volumen:,}",
+                    "Stop Loss": round(precio - (atr * 1.5), 2),
+                    "Take Profit": round(precio + (atr * 3), 2),
+                    "Fuerza": alcista if alcista > bajista else bajista
+                })
+            except: continue
 
-    if resultados:
-        df_res = pd.DataFrame(resultados).sort_values(by="Score", ascending=False)
-        st.dataframe(df_res, use_container_width=True)
-    else:
-        st.info("Esperando datos válidos del mercado...")
-
-# --- PANEL DE EJECUCIÓN (ALPACA) ---
-with col2:
-    st.subheader("⚡ Terminal de Ejecución")
-    st.info("Modo: Bracket Order Automática")
-    
-    if resultados:
-        # Menú desplegable con las mejores opciones
-        opciones = [f"{r['Ticker']} - Precio: ${r['Precio']}" for r in resultados]
-        seleccion = st.selectbox("Selecciona Acción a Comprar", opciones)
-        
-        # Extraer el ticker seleccionado
-        ticker_elegido = seleccion.split(" - ")[0]
-        
-        # Buscar los datos de esa acción en nuestra tabla
-        datos_accion = next(item for item in resultados if item["Ticker"] == ticker_elegido)
-        precio_actual = datos_accion["Precio"]
-        sl_sugerido = datos_accion["Stop Loss"]
-        tp_sugerido = datos_accion["Take Profit"]
-        
-        # Inputs para la orden
-        cantidad = st.number_input("Cantidad de Acciones", min_value=1, value=10)
-        
-        st.markdown(f"**Stop Loss Dinámico:** ${sl_sugerido}")
-        st.markdown(f"**Take Profit Dinámico:** ${tp_sugerido}")
-        
-        if st.button("🟢 ENVIAR ORDEN A ALPACA", use_container_width=True):
-            if client is None:
-                st.error("Error de conexión con Alpaca. Verifica tus claves.")
-            else:
-                try:
-                    # Construir la orden Bracket (Compra + SL + TP)
-                    order_data = MarketOrderRequest(
-                        symbol=ticker_elegido,
-                        qty=cantidad,
-                        side=OrderSide.BUY,
-                        time_in_force=TimeInForce.GTC,
-                        take_profit=TakeProfitRequest(limit_price=tp_sugerido),
-                        stop_loss=StopLossRequest(stop_price=sl_sugerido)
-                    )
-                    
-                    # Enviar orden
-                    orden = client.submit_order(order_data=order_data)
-                    st.success(f"¡Orden enviada con éxito! Ticker: {ticker_elegido}")
-                    st.balloons()
-                except Exception as e:
-                    st.error(f"La plataforma de Alpaca rechazó la orden. Detalle: {e}")
+        if resultados:
+            df_final = pd.DataFrame(resultados).sort_values(by="Fuerza", ascending=False)
+            
+            # Mostrar Tabla de Radar
+            st.subheader("🎯 Mejores Oportunidades Detectadas")
+            st.dataframe(df_final.drop(columns=["Fuerza"]), use_container_width=True)
+            
+            # Panel de Ejecución
+            st.divider()
+            col_exec1, col_exec2 = st.columns([1, 2])
+            with col_exec1:
+                st.subheader("⚡ Ejecución Rápida")
+                t_trade = st.selectbox("Seleccionar Ticker", df_final['Ticker'])
+                datos_t = df_final[df_final['Ticker'] == t_trade].iloc[0]
+                cant = st.number_input("Cantidad", value=10)
+                
+                if st.button("🟢 COMPRAR (Bracket Order)"):
+                    try:
+                        req = MarketOrderRequest(
+                            symbol=t_trade, qty=cant, side=OrderSide.BUY, time_in_force=TimeInForce.GTC,
+                            take_profit=TakeProfitRequest(limit_price=datos_t['Take Profit']),
+                            stop_loss=StopLossRequest(stop_price=datos_t['Stop Loss'])
+                        )
+                        alpaca.submit_order(req)
+                        st.success("Orden enviada con SL y TP incorporados")
+                    except Exception as e:
+                        st.error(f"Error: {e}")
+        else:
+            st.warning("No se encontraron acciones en ese rango de precio con volumen suficiente.")
