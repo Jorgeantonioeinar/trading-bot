@@ -17,6 +17,29 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
+# Agregando el ticker a la lista de resultados
+resultados.append({
+    "Ticker": ticker,
+    "Precio": round(precio_actual, 2),
+    "Gap/Salto (%)": f"{round(gap_pct, 2)}%",
+    "Estado RSI": estado_rsi,
+    "RSI (7)": round(rsi_actual, 1),
+    "Volumen Score": f"{score_volumen}/10",
+    "Volumen Total": f"{int(volumen_actual):,}",
+    "ATR Volatilidad": f"{round(volatilidad_pct, 2)}%"
+})
+
+# --- MOSTRAR LA TABLA EN STREAMLIT (FUERA DEL BUCLE) ---
+if resultados:
+    df_resultados = pd.DataFrame(resultados)
+    
+    # Ordenar para que los Gaps más grandes salgan arriba
+    # Nota: Asegúrate de que esta línea esté escrita exactamente así:
+    df_resultados['Gap_Num'] = df_resultados['Gap/Salto (%)'].str.replace('%', '', regex=False).astype(float)
+    df_resultados = df_resultados.sort_values(by='Gap_Num', ascending=False).drop(columns=['Gap_Num'])
+    
+    st.markdown("### 🎯 Mejores Oportunidades Detectadas")
+    st.dataframe(df_resultados, use_container_width=True)
 # --- CLAVES DE ACCESO (SILENCIOSAS) ---
 ALPACA_API_KEY = "PKOKUMRZBCA2YJKVZIATSPGV5J"
 ALPACA_SECRET_KEY = "2UBriZpW7NooR1EvtowC63GcarFt7rEQFD9ofti9Ah6N"
@@ -28,14 +51,16 @@ def get_alpaca():
 alpaca = get_alpaca()
 
 # --- BARRA LATERAL: CONFIGURACIÓN DEL RADAR ---
-st.sidebar.header("📡 CONFIGURACIÓN DEL RADAR")
+st.sidebar.header("⚙️ CONFIGURACIÓN DEL RADAR")
 modo_radar = st.sidebar.radio("Modo de Búsqueda", ["Radar Automático (S&P 500 / NASDAQ)", "Radar Manual (Mis Tickers)"])
 
 col_p1, col_p2 = st.sidebar.columns(2)
-precio_min = col_p1.number_input("Precio Mín $", min_value=0.1, value=1.0)
-precio_max = col_p2.number_input("Precio Máx $", min_value=1.0, value=200.0)
+# Aquí cambiamos el value a 0.2 para que sea tu nuevo punto de partida
+precio_min = col_p1.number_input("Precio Mín $", min_value=0.1, value=0.2, step=0.1)
+precio_max = col_p2.number_input("Precio Máx $", min_value=1.0, value=300.0, step=10.0)
 
-vol_min = st.sidebar.number_input("Volumen Mínimo Diario", value=500000)
+vol_min = st.sidebar.number_input("Volumen Mínimo Diario", value=500000, step=100000)
+
 # --- REINCORPORACIÓN DEL MENÚ DE SENSIBILIDAD ---
 st.sidebar.header("⚙️ CONFIGURACIÓN")
 
@@ -110,36 +135,69 @@ if st.button("🚀 INICIAR ESCANEO DE MERCADO"):
                 df = data_all[t].dropna()
                 if df.empty or len(df) < 20: continue
                 
-                precio = df.iloc[-1]['Close']
-                volumen = df.iloc[-1]['Volume']
-                
-                # Filtro de rango de precio
-                if not (precio_min <= precio <= precio_max): continue
-                
-                df = procesar_datos(df)
-                alcista, bajista = calificar_oportunidad(df)
-                
-                atr = df.iloc[-1]['atr']
-                
-                resultados.append({
-                    "Ticker": t,
-                    "Precio": round(precio, 2),
-                    "Calificación Alcista": f"{alcista}/10",
-                    "Calificación Bajista": f"{bajista}/10",
-                    "RSI": round(df.iloc[-1]['rsi'], 1),
-                    "Volumen": f"{volumen:,}",
-                    "Stop Loss": round(precio - (atr * 1.5), 2),
-                    "Take Profit": round(precio + (atr * 3), 2),
-                    "Fuerza": alcista if alcista > bajista else bajista
-                })
+                # --- MOTOR MATEMÁTICO AVANZADO (Línea 137 en adelante) ---
+            precio_actual = df['Close'].iloc[-1]
+            precio_apertura = df['Open'].iloc[-1]
+            
+            # 1. Detector de Gaps / Explosión
+            gap_pct = ((precio_actual - precio_apertura) / precio_apertura) * 100
+            
+            # 2. RSI 7 Periodos (Scalping Rápido)
+            delta = df['Close'].diff()
+            gain = (delta.where(delta > 0, 0)).rolling(window=7).mean()
+            loss = (-delta.where(delta < 0, 0)).rolling(window=7).mean()
+            rs = gain / loss
+            rsi_actual = 100 - (100 / (1 + rs)).iloc[-1]
+            
+            # 3. Volatilidad ATR %
+            df['Rango'] = df['High'] - df['Low']
+            atr_actual = df['Rango'].rolling(window=7).mean().iloc[-1]
+            volatilidad_pct = (atr_actual / precio_actual) * 100
+            
+            # 4. Puntaje de Volumen (Fuerza del Movimiento)
+            volumen_actual = df['Volume'].iloc[-1]
+            volumen_promedio = df['Volume'].rolling(window=20).mean().iloc[-1]
+            score_volumen = min(10, int((volumen_actual / (volumen_promedio + 1)) * 5))
+
+            # 5. Clasificación de Estado
+            if 60 <= rsi_actual <= 75:
+                estado_rsi = "✅ ZONA ÓPTIMA"
+            elif rsi_actual > 75:
+                estado_rsi = "🔥 SOBRECOMPRA"
+            else:
+                estado_rsi = "⚖️ NEUTRAL"
+
+            # --- GUARDAR RESULTADOS EN LA LISTA ---
+            resultados.append({
+                "Ticker": t,
+                "Precio": round(precio_actual, 2),
+                "Gap/Salto (%)": f"{round(gap_pct, 2)}%",
+                "Estado RSI": estado_rsi,
+                "RSI (7)": round(rsi_actual, 1),
+                "Volumen Score": f"{score_volumen}/10",
+                "Volumen Total": f"{int(volumen_actual):,}",
+                "ATR Volatilidad": f"{round(volatilidad_pct, 2)}%"
+            })
+        
             except: continue
 
+
+        # --- MOSTRAR LA TABLA EN STREAMLIT (FUERA DEL BUCLE) ---
+    if resultados:
+        df_resultados = pd.DataFrame(resultados)
+        
+        # Esta línea permite que la tabla se ordene sola de mayor a menor Gap
+        df_resultados['Gap_Num'] = df_resultados['Gap/Salto (%)'].str.replace('%', '', regex=False).astype(float)
+        df_resultados = df_resultados.sort_values(by='Gap_Num', ascending=False).drop(columns=['Gap_Num'])
+        
+        st.markdown("### 🎯 Mejores Oportunidades Detectadas")
+        st.dataframe(df_resultados, use_container_width=True)
         if resultados:
-            df_final = pd.DataFrame(resultados).sort_values(by="Fuerza", ascending=False)
+            df_final = pd.DataFrame(resultados).sort_values(by="Gap/Salto (%)", ascending=False)
             
             # Mostrar Tabla de Radar
             st.subheader("🎯 Mejores Oportunidades Detectadas")
-            st.dataframe(df_final.drop(columns=["Fuerza"]), use_container_width=True)
+            st.dataframe(df_final, use_container_width=True)S
             
             # Panel de Ejecución
             st.divider()
