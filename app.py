@@ -36,7 +36,21 @@ precio_min = col_p1.number_input("Precio Mín $", min_value=0.1, value=1.0)
 precio_max = col_p2.number_input("Precio Máx $", min_value=1.0, value=200.0)
 
 vol_min = st.sidebar.number_input("Volumen Mínimo Diario", value=500000)
+# --- REINCORPORACIÓN DEL MENÚ DE SENSIBILIDAD ---
+st.sidebar.header("⚙️ CONFIGURACIÓN")
 
+sensibilidad = st.sidebar.selectbox(
+    "Nivel de Sensibilidad",
+    ["Nivel 1: Élite (Filtro Estricto)", "Nivel 2: Equilibrado", "Nivel 3: Agresivo (Más Alertas)"],
+    index=1)
+
+# Lógica de Umbral (Esto es lo que hace que el radar sea potente)
+if "Élite" in sensibilidad:
+    umbral_score = 8
+elif "Equilibrado" in sensibilidad:
+    umbral_score = 5
+else:
+    umbral_score = 2
 if modo_radar == "Radar Manual (Mis Tickers)":
     tickers_input = st.sidebar.text_area("Ingresa hasta 30 tickers (separados por coma)", "AAPL, TSLA, NVDA, AMD, GME, AMC")
     lista_tickers = [t.strip().upper() for t in tickers_input.split(",")]
