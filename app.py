@@ -17,29 +17,6 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-# Agregando el ticker a la lista de resultados
-resultados.append({
-    "Ticker": ticker,
-    "Precio": round(precio_actual, 2),
-    "Gap/Salto (%)": f"{round(gap_pct, 2)}%",
-    "Estado RSI": estado_rsi,
-    "RSI (7)": round(rsi_actual, 1),
-    "Volumen Score": f"{score_volumen}/10",
-    "Volumen Total": f"{int(volumen_actual):,}",
-    "ATR Volatilidad": f"{round(volatilidad_pct, 2)}%"
-})
-
-# --- MOSTRAR LA TABLA EN STREAMLIT (FUERA DEL BUCLE) ---
-if resultados:
-    df_resultados = pd.DataFrame(resultados)
-    
-    # Ordenar para que los Gaps más grandes salgan arriba
-    # Nota: Asegúrate de que esta línea esté escrita exactamente así:
-    df_resultados['Gap_Num'] = df_resultados['Gap/Salto (%)'].str.replace('%', '', regex=False).astype(float)
-    df_resultados = df_resultados.sort_values(by='Gap_Num', ascending=False).drop(columns=['Gap_Num'])
-    
-    st.markdown("### 🎯 Mejores Oportunidades Detectadas")
-    st.dataframe(df_resultados, use_container_width=True)
 # --- CLAVES DE ACCESO (SILENCIOSAS) ---
 ALPACA_API_KEY = "PKOKUMRZBCA2YJKVZIATSPGV5J"
 ALPACA_SECRET_KEY = "2UBriZpW7NooR1EvtowC63GcarFt7rEQFD9ofti9Ah6N"
