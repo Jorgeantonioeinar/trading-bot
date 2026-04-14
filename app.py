@@ -1,5 +1,6 @@
 import streamlit as st
 import pandas as pd
+import numpy as np
 import yfinance as yf
 from alpaca.trading.client import TradingClient
 from alpaca.trading.requests import MarketOrderRequest, TakeProfitRequest, StopLossRequest
@@ -7,20 +8,21 @@ from alpaca.trading.enums import OrderSide, TimeInForce
 from datetime import datetime
 import pytz
 
-# --- CONFIGURACIÓN DE LA PÁGINA ---
-st.set_page_config(page_title="Thunder Professional Radar", layout="wide")
+# --- CONFIGURACIÓN DE PÁGINA ---
+st.set_page_config(page_title="THUNDER RADAR V80 - ULTRA", layout="wide")
 
-# --- ESTILOS CSS ---
+# --- ESTILOS PROFESIONALES ---
 st.markdown("""
     <style>
-    .metric-card { background-color: #1e2130; padding: 15px; border-radius: 10px; border: 1px solid #4a4d61; }
-    .stButton>button { width: 100%; border-radius: 5px; height: 3em; background-color: #2e7d32; color: white; font-weight: bold; }
+    .stMetric { background-color: #1e2130; padding: 10px; border-radius: 8px; border: 1px solid #4a4d61; }
+    .stButton>button { width: 100%; border-radius: 5px; font-weight: bold; }
+    .buy-btn { background-color: #2e7d32 !important; color: white !important; }
+    .sell-btn { background-color: #c62828 !important; color: white !important; }
     </style>
     """, unsafe_allow_html=True)
 
-# --- CLAVES DE ACCESO (SILENCIOSAS) ---
-# NOTA: En producción, es mejor usar variables de entorno (st.secrets)
-ALPACA_API_KEY = "PK0KUMRZBCA2YJKVZIATSPGV5J"
+# --- CLAVES DE ACCESO ---
+ALPACA_API_KEY = "PKOKUMRZBCA2YJKVZIATSPGV5J"
 ALPACA_SECRET_KEY = "2UBriZpW7NooR1EvtowC63GcarFt7rEQFD9ofti9Ah6N"
 
 @st.cache_resource
@@ -29,160 +31,179 @@ def get_alpaca():
 
 alpaca = get_alpaca()
 
-# --- FUNCIONES DE ANÁLISIS ---
-def calcular_rsi(series, period=7):
-    delta = series.diff(1)
-    gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
-    loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
-    rs = gain / loss
-    return 100 - (100 / (1 + rs))
+# --- LÓGICA DE CALIFICACIÓN (1-10) ---
+def obtener_score(df):
+    actual = df.iloc[-1]
+    previo = df.iloc[-2]
+    
+    # Score Alcista
+    score_up = 0
+    if actual['Close'] > actual['vwap']: score_up += 3
+    if actual['ema_9'] > actual['ema_20']: score_up += 3
+    if actual['rsi'] > 55: score_up += 2
+    if actual['Volume'] > df['Volume'].rolling(20).mean().iloc[-1]: score_up += 2
+    
+    # Score Bajista
+    score_down = 0
+    if actual['Close'] < actual['vwap']: score_down += 3
+    if actual['ema_9'] < actual['ema_20']: score_down += 3
+    if actual['rsi'] < 45: score_down += 2
+    if actual['Volume'] > df['Volume'].rolling(20).mean().iloc[-1]: score_down += 2
+    
+    return min(score_up, 10), min(score_down, 10)
 
-def calcular_atr(df, period=14):
-    high_low = df['High'] - df['Low']
-    high_close = (df['High'] - df['Close'].shift()).abs()
-    low_close = (df['Low'] - df['Close'].shift()).abs()
-    ranges = pd.concat([high_low, high_close, low_close], axis=1)
-    true_range = ranges.max(axis=1)
-    return true_range.rolling(window=period).mean()
+# --- DETERMINAR SESIÓN DE MERCADO ---
+def get_market_session():
+    tz = pytz.timezone('US/Eastern')
+    now = datetime.now(tz)
+    market_open = now.replace(hour=9, minute=30, second=0)
+    market_close = now.replace(hour=16, minute=0, second=0)
+    
+    if now < market_open: return "PRE-MARKET"
+    elif now > market_close: return "AFTER-HOURS"
+    else: return "REGULAR"
 
-# --- BARRA LATERAL: CONFIGURACIÓN ---
-st.sidebar.title("⚙️ CONFIGURACIÓN DEL RADAR")
-modo_busqueda = st.sidebar.radio("Modo de Búsqueda", ["Radar Automático (S&P 500 / NASDAQ)", "Radar Manual (Mis Tickers)"])
+session = get_market_session()
 
-col1, col2 = st.sidebar.columns(2)
-precio_min = col1.number_input("Precio Mín $", value=0.20, step=1.0)
-precio_max = col2.number_input("Precio Máx $", value=300.00, step=1.0)
+# --- BARRA LATERAL ---
+st.sidebar.header(f"🏛️ ESTADO: {session}")
+modo_radar = st.sidebar.selectbox("Filtro de Radar", ["Explosión Momentum", "Gap Up Scalping", "Personalizado"])
+precio_min = st.sidebar.number_input("Precio Mín $", value=0.5, step=0.1)
+precio_max = st.sidebar.number_input("Precio Máx $", value=150.0, step=1.0)
 
-volumen_minimo = st.sidebar.number_input("Volumen Mínimo Diario", value=500000, step=100000)
-
-st.sidebar.subheader("⚙️ CONFIGURACIÓN")
-nivel_sensibilidad = st.sidebar.selectbox("Nivel de Sensibilidad", ["Nivel 1: Conservador", "Nivel 2: Equilibrado", "Nivel 3: Agresivo"], index=1)
+if st.sidebar.toggle("Usar Mis Tickers"):
+    lista_tickers = st.sidebar.text_area("Lista (sep. por coma)", "AAPL,TSLA,NVDA,GME,AMC,MARA,RIOT").split(",")
+else:
+    # Lista enfocada en volatilidad para Momentum
+    lista_tickers = ["TSLA", "NVDA", "AMD", "GME", "AMC", "MARA", "RIOT", "COIN", "PLTR", "SOFI", "MSTR", "UPST", "AFRM", "HOOD", "BABA", "NIO"]
 
 # --- INTERFAZ PRINCIPAL ---
-st.title("⚡ THUNDER PROFESSIONAL RADAR VOU")
+col_t1, col_t2 = st.columns([3, 1])
+with col_t1:
+    st.title("⚡ THUNDER RADAR V80 PRO")
+with col_t2:
+    if st.button("🔄 ACTUALIZAR PORTAFOLIO"):
+        st.rerun()
 
-# Detectar estado del mercado
-tz = pytz.timezone('US/Eastern')
-now = datetime.now(tz)
-hora_actual = now.time()
-
-if datetime.strptime("04:00", "%H:%M").time() <= hora_actual < datetime.strptime("09:30", "%H:%M").time():
-    st.info(f"🕒 **PRE-MARKET ACTIVO** (Hora EST: {hora_actual.strftime('%H:%M')}) - Analizando datos con Prepost=True")
-elif datetime.strptime("09:30", "%H:%M").time() <= hora_actual < datetime.strptime("16:00", "%H:%M").time():
-    st.success(f"🟢 **MERCADO ABIERTO** (Hora EST: {hora_actual.strftime('%H:%M')})")
-elif datetime.strptime("16:00", "%H:%M").time() <= hora_actual <= datetime.strptime("20:00", "%H:%M").time():
-    st.warning(f"🌙 **AFTER-HOURS ACTIVO** (Hora EST: {hora_actual.strftime('%H:%M')}) - Analizando datos con Prepost=True")
-else:
-    st.error(f"🔴 **MERCADO CERRADO** (Hora EST: {hora_actual.strftime('%H:%M')})")
-
-if st.button("🚀 INICIAR ESCANEO DE MERCADO"):
-    with st.spinner("Escaneando mercado en tiempo real (incluyendo Pre/After Hours)..."):
+# --- 1. SECCIÓN DE POSICIONES ACTIVAS (MONITOR DE P&L) ---
+st.subheader("💼 Mis Posiciones en Tiempo Real")
+try:
+    positions = alpaca.get_all_positions()
+    if positions:
+        pos_data = []
+        for p in positions:
+            p_n_l = float(p.unrealized_plpc) * 100
+            pos_data.append({
+                "Ticker": p.symbol,
+                "Cant": p.qty,
+                "Entrada": round(float(p.avg_entry_price), 2),
+                "Precio Act.": round(float(p.current_price), 2),
+                "P&L %": f"{round(p_n_l, 2)}%",
+                "Valor Total": f"${round(float(p.market_value), 2)}"
+            })
+        df_pos = pd.DataFrame(pos_data)
+        st.dataframe(df_pos, use_container_width=True)
         
-        # Lista de ejemplo (puedes ampliarla o cargarla desde un CSV)
-        tickers_a_escanear = ["AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "AMD", "PLTR", "SOFI", "RIOT", "HOOD", "UBER", "LYFT"]
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            t_sell = st.selectbox("Ticker para Salida", [p['Ticker'] for p in pos_data])
+        with c2:
+            if st.button("🔴 VENTA INMEDIATA (Market)", use_container_width=True):
+                alpaca.close_position(t_sell)
+                st.warning(f"Cerrando posición en {t_sell}...")
+    else:
+        st.info("No tienes posiciones abiertas actualmente.")
+except Exception as e:
+    st.error(f"Error al cargar posiciones: {e}")
+
+st.divider()
+
+# --- 2. RADAR DE MERCADO ---
+if st.button("🚀 INICIAR ESCANEO DE MOMENTUM"):
+    with st.spinner(f"Escaneando {session}..."):
+        # Descarga con prepost=True para ver Pre y After hours
+        data_all = yf.download(lista_tickers, period="2d", interval="5m", group_by='ticker', prepost=True, progress=False)
         resultados = []
 
-        for t in tickers_a_escanear:
+        for t in lista_tickers:
             try:
-                # Descargar datos intradía incluyendo PRE y AFTER HOURS (prepost=True)
-                ticker_data = yf.Ticker(t)
-                df = ticker_data.history(period="5d", interval="15m", prepost=True)
+                t = t.strip().upper()
+                df = data_all[t].dropna()
+                if len(df) < 20: continue
                 
-                if df.empty or len(df) < 20:
-                    continue
+                # Cálculos Técnicos
+                df['ema_9'] = df['Close'].ewm(span=9).mean()
+                df['ema_20'] = df['Close'].ewm(span=20).mean()
+                tp = (df['High'] + df['Low'] + df['Close']) / 3
+                df['vwap'] = (tp * df['Volume']).cumsum() / df['Volume'].cumsum()
                 
-                # Precios y Variaciones
-                precio_actual = df['Close'].iloc[-1]
-                precio_anterior = df['Close'].iloc[-2]
+                # RSI
+                delta = df['Close'].diff()
+                gain = (delta.where(delta > 0, 0)).rolling(14).mean()
+                loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
+                df['rsi'] = 100 - (100 / (1 + (gain / loss)))
                 
-                # Filtro de precio
-                if not (precio_min <= precio_actual <= precio_max):
-                    continue
+                # ATR para SL/TP Dinámico
+                df['atr'] = (df['High'] - df['Low']).rolling(14).mean()
                 
-                gap_pct = ((precio_actual - precio_anterior) / precio_anterior) * 100
+                actual = df.iloc[-1]
+                precio = round(actual['Close'], 2)
                 
-                # Volumen
-                volumen_actual = df['Volume'].iloc[-1]
-                volumen_promedio = df['Volume'].rolling(window=20).mean().iloc[-1]
-                
-                # Si el volumen promedio es 0 o NaN, saltar
-                if pd.isna(volumen_promedio) or volumen_promedio == 0:
-                    continue
-                
-                score_volumen = min(10, int((volumen_actual / (volumen_promedio + 1)) * 5))
-                
-                # Cálculo de Indicadores
-                df['RSI'] = calcular_rsi(df['Close'], 7)
-                df['ATR'] = calcular_atr(df, 14)
-                
-                rsi_actual = df['RSI'].iloc[-1]
-                atr_actual = df['ATR'].iloc[-1]
-                
-                if pd.isna(rsi_actual) or pd.isna(atr_actual):
-                    continue
+                if not (precio_min <= precio <= precio_max): continue
 
-                volatilidad_pct = (atr_actual / precio_actual) * 100
+                # Lógica de Explosión (Momentum)
+                gap_pct = ((actual['Close'] - df['Open'].iloc[-1]) / df['Open'].iloc[-1]) * 100
+                s_alcista, s_bajista = obtener_score(df)
+                
+                # Protección Dinámica (SL y TP sugeridos)
+                volatilidad = actual['atr']
+                sl_sugerido = round(precio - (volatilidad * 2), 2)
+                tp_sugerido = round(precio + (volatilidad * 4), 2)
 
-                # Clasificación de Estado
-                if 60 <= rsi_actual <= 75:
-                    estado_rsi = "✅ ZONA ÓPTIMA"
-                elif rsi_actual > 75:
-                    estado_rsi = "🔥 SOBRECOMPRA"
-                else:
-                    estado_rsi = "⚖️ NEUTRAL"
-
-                # Guardar resultados
                 resultados.append({
                     "Ticker": t,
-                    "Precio": round(precio_actual, 2),
-                    "Gap/Salto (%)": f"{round(gap_pct, 2)}%",
-                    "Estado RSI": estado_rsi,
-                    "RSI (7)": round(rsi_actual, 1),
-                    "Volumen Score": f"{score_volumen}/10",
-                    "Volumen Total": f"{int(volumen_actual):,}",
-                    "ATR Volatilidad": f"{round(volatilidad_pct, 2)}%",
-                    "Fuerza": score_volumen + (1 if 60 <= rsi_actual <= 75 else 0) # Métrica interna para ordenar
+                    "Precio": precio,
+                    "Score 🐂": s_alcista,
+                    "Score 🐻": s_bajista,
+                    "Gap %": round(gap_pct, 2),
+                    "RSI": round(actual['rsi'], 1),
+                    "Stop Loss": sl_sugerido,
+                    "Take Profit": tp_sugerido,
+                    "Volumen": int(actual['Volume'])
                 })
+            except: continue
 
-            except Exception as e:
-                # Esto soluciona tu error de sintaxis anterior. 
-                # Si ocurre un error con un ticker, simplemente lo ignora y pasa al siguiente.
-                continue
-
-        # --- MOSTRAR RESULTADOS ---
         if resultados:
-            df_final = pd.DataFrame(resultados).sort_values(by="Fuerza", ascending=False)
-            
-            st.subheader("🎯 Mejores Oportunidades Detectadas")
-            st.dataframe(df_final.drop(columns=["Fuerza"]), use_container_width=True)
+            df_res = pd.DataFrame(resultados).sort_values(by="Score 🐂", ascending=False)
+            st.subheader("🎯 Oportunidades de Explosión Detectadas")
+            st.dataframe(df_res, use_container_width=True)
 
-            # --- PANEL DE EJECUCIÓN ---
+            # --- 3. PANEL DE EJECUCIÓN ---
             st.divider()
-            col_exec1, col_exec2 = st.columns([1, 2])
-            
-            with col_exec1:
-                st.subheader("⚡ Ejecución Rápida")
-                t_trade = st.selectbox("Seleccionar Ticker", df_final['Ticker'])
-                cant = st.number_input("Cantidad", value=10, min_value=1)
+            col_buy1, col_buy2 = st.columns([1, 2])
+            with col_buy1:
+                st.subheader("🛒 Compra Rápida")
+                t_buy = st.selectbox("Ticker a Comprar", df_res['Ticker'])
+                row = df_res[df_res['Ticker'] == t_buy].iloc[0]
+                cant = st.number_input("Cantidad de Acciones", value=1, min_value=1)
                 
-                # Parámetros básicos para SL y TP (Ajustables según tu estrategia)
-                precio_ticker = float(df_final[df_final['Ticker'] == t_trade]['Precio'].iloc[0])
-                tp_price = round(precio_ticker * 1.05, 2) # Take Profit 5% arriba
-                sl_price = round(precio_ticker * 0.98, 2) # Stop Loss 2% abajo
-
-                if st.button("🟢 COMPRAR (Bracket Order)"):
+                # Botón de Compra con Protección Automática
+                if st.button("🟢 EJECUTAR COMPRA PROTEGIDA", use_container_width=True):
                     try:
                         req = MarketOrderRequest(
-                            symbol=t_trade,
-                            qty=cant,
-                            side=OrderSide.BUY,
+                            symbol=t_buy, 
+                            qty=cant, 
+                            side=OrderSide.BUY, 
                             time_in_force=TimeInForce.GTC,
-                            take_profit=TakeProfitRequest(limit_price=tp_price),
-                            stop_loss=StopLossRequest(stop_price=sl_price)
+                            take_profit=TakeProfitRequest(limit_price=row['Take Profit']),
+                            stop_loss=StopLossRequest(stop_price=row['Stop Loss'])
                         )
                         alpaca.submit_order(req)
-                        st.success(f"Orden enviada para {cant} acciones de {t_trade} con SL y TP incorporados.")
+                        st.success(f"Orden Enviada: {t_buy} | SL: {row['Stop Loss']} | TP: {row['Take Profit']}")
                     except Exception as e:
-                        st.error(f"Error al enviar la orden: {e}")
+                        st.error(f"Error de ejecución: {e}")
+            
+            with col_buy2:
+                st.info(f"💡 **Análisis de {t_buy}**: Score de {row['Score 🐂']}/10. El sistema ha calculado un Stop Loss a ${row['Stop Loss']} basado en la volatilidad actual del mercado.")
         else:
-            st.warning("No se encontraron acciones en ese rango de precio con volumen suficiente bajo los parámetros actuales.")
+            st.warning("No se detecta momentum claro en este momento. Esperando explosión...")
