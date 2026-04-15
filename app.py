@@ -9,8 +9,8 @@ from alpaca.trading.requests import MarketOrderRequest
 from alpaca.trading.enums import OrderSide, TimeInForce
 
 # ================== CONFIG ==================
-API_KEY = "TU_API_KEY"
-SECRET_KEY = "TU_SECRET_KEY"
+API_KEY = "PKOKUMRZBCA2YJKVZIATSPGV5J"
+SECRET_KEY = "2UBriZpW7NooR1EvtowC63GcarFt7rEQFD9ofti9Ah6N"
 
 data_client = StockHistoricalDataClient(API_KEY, SECRET_KEY)
 trading_client = TradingClient(API_KEY, SECRET_KEY, paper=True)
