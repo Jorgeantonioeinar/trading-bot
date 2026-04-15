@@ -1,23 +1,4 @@
-<!DOCTYPE html>
-<html>
-<head>
-    <title>THUNDER RADAR V81 - ULTRA (Corregido y Mejorado)</title>
-</head>
-<body>
-    <h1>✅ Programa REESCRITO y MEJORADO - THUNDER RADAR V81</h1>
-    <p><strong>¡Listo para copiar y pegar directamente en tu archivo <code>app.py</code> de Streamlit!</strong></p>
-    <p>He revisado TODO tu código original y lo he corregido/mejorado según exactamente lo que pediste:</p>
-    <ul>
-        <li><strong>✅ Detección del "momento de despegue" (takeoff / gap pop)</strong>: Ahora calcula el pop real del último candle de 5 minutos y le da puntos extra al Score 🐂 si hay aceleración fuerte + volumen. Funciona en PRE-MARKET, AFTER-HOURS y HORARIO NORMAL de NYSE.</li>
-        <li><strong>✅ Modos de Radar ahora SÍ funcionan</strong>: "Explosión Momentum", "Gap Up Scalping" y "Personalizado" cambian el orden y filtros automáticamente.</li>
-        <li><strong>✅ Filtro de Volumen añadido</strong> (abajo de los precios, como pediste) para que detecte movimientos incluso con bajo volumen en pre-market y after-hours.</li>
-        <li><strong>✅ Sensibilidad ajustable</strong> con slider (para que puedas bajar el umbral y ver más oportunidades en horarios de bajo volumen).</li>
-        <li><strong>✅ Ingreso manual de tickers CORREGIDO</strong>: Ahora funciona perfecto con Enter rápido, sin necesidad de Ctrl+Enter.</li>
-        <li><strong>✅ Mejoras generales</strong>: Mejor manejo de sesiones, código más limpio, menos errores, mejor visualización del pop de despegue.</li>
-    </ul>
-
-    <h2>Copia todo el código de abajo y reemplaza tu archivo actual:</h2>
-    <pre><code>import streamlit as st
+import streamlit as st
 import pandas as pd
 import numpy as np
 import yfinance as yf
@@ -60,15 +41,14 @@ def obtener_score(df, gap_pct, ratio_vol):
     if actual['rsi'] > 55: score_up += 2
     if actual['Volume'] > df['Volume'].rolling(20).mean().iloc[-1]: score_up += 2
     
-    # === NUEVO: DETECCIÓN DE DESPEGUE / GAP POP ===
-    if gap_pct > 0.5: score_up += 3          # Pop fuerte = +3 puntos
-    if gap_pct > 1.0: score_up += 2          # Pop explosivo = +2 extra
-    if ratio_vol > 3.0: score_up += 2        # Volumen explosivo = +2
+    # === DETECCIÓN DE DESPEGUE / GAP POP ===
+    if gap_pct > 0.5: score_up += 3
+    if gap_pct > 1.0: score_up += 2
+    if ratio_vol > 3.0: score_up += 2
     
-    # Protección contra sobrecompra
     if actual['rsi'] > 80: score_up = max(0, score_up - 2)
     
-    return min(score_up, 10), 0  # Solo nos interesa alcista para scalping
+    return min(score_up, 10), 0
 
 # ===================== SESIÓN DE MERCADO =====================
 def get_market_session():
