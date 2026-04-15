@@ -72,7 +72,8 @@ precio_min = st.sidebar.number_input("Precio Mín $", value=0.5, step=0.1)
 precio_max = st.sidebar.number_input("Precio Máx $", value=150.0, step=1.0)
 
 if st.sidebar.toggle("Usar Mis Tickers"):
-    lista_tickers = st.sidebar.text_area("Lista (sep. por coma)", "AAPL,TSLA,NVDA,GME,AMC,MARA,RIOT").split(",")
+    # CAMBIO A TEXT_INPUT: Permite dar "Enter" rápidamente sin necesidad de Ctrl+Enter
+    lista_tickers = st.sidebar.text_input("Lista (sep. por coma)", "AAPL,TSLA,NVDA,GME,AMC,MARA,RIOT").split(",")
 else:
     # Lista enfocada en volatilidad para Momentum
     lista_tickers = ["TSLA", "NVDA", "AMD", "GME", "AMC", "MARA", "RIOT", "COIN", "PLTR", "SOFI", "MSTR", "UPST", "AFRM", "HOOD", "BABA", "NIO"]
@@ -155,6 +156,22 @@ if st.button("🚀 INICIAR ESCANEO DE MOMENTUM"):
                 gap_pct = ((actual['Close'] - df['Open'].iloc[-1]) / df['Open'].iloc[-1]) * 100
                 s_alcista, s_bajista = obtener_score(df)
                 
+                # Estado RSI (Agregado)
+                if actual['rsi'] >= 70:
+                    estado_rsi = "🔥 SOBRECOMPRA"
+                elif actual['rsi'] <= 30:
+                    estado_rsi = "🧊 SOBREVENTA"
+                else:
+                    estado_rsi = "⚖️ NEUTRAL"
+
+                # Volumen Score de 1 a 10 (Agregado)
+                vol_promedio = df['Volume'].rolling(20).mean().iloc[-1]
+                if vol_promedio > 0:
+                    ratio_vol = actual['Volume'] / vol_promedio
+                    v_score = min(int(ratio_vol * 4), 10)  # Multiplicador agresivo para detectar explosiones
+                else:
+                    v_score = 0
+                
                 # Protección Dinámica (SL y TP sugeridos)
                 volatilidad = actual['atr']
                 sl_sugerido = round(precio - (volatilidad * 2), 2)
@@ -166,14 +183,18 @@ if st.button("🚀 INICIAR ESCANEO DE MOMENTUM"):
                     "Score 🐂": s_alcista,
                     "Score 🐻": s_bajista,
                     "Gap %": round(gap_pct, 2),
+                    "Estado RSI": estado_rsi,
                     "RSI": round(actual['rsi'], 1),
+                    "ATR Volatilidad": f"${round(actual['atr'], 3)}",
                     "Stop Loss": sl_sugerido,
                     "Take Profit": tp_sugerido,
-                    "Volumen": int(actual['Volume'])
+                    "Volumen Score": f"{v_score}/10",
+                    "Volumen Total": int(actual['Volume'])
                 })
             except: continue
 
         if resultados:
+            # Ordenamos por el Score Alcista para que las mejores oportunidades salgan arriba
             df_res = pd.DataFrame(resultados).sort_values(by="Score 🐂", ascending=False)
             st.subheader("🎯 Oportunidades de Explosión Detectadas")
             st.dataframe(df_res, use_container_width=True)
