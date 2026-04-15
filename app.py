@@ -2,19 +2,50 @@ import streamlit as st
 import pandas as pd
 import yfinance as yf
 import numpy as np
-from datetime import datetime
-import pytz
 
 st.set_page_config(page_title="THUNDER RADAR PRO", layout="wide")
 
+# ===================== SIDEBAR =====================
+st.sidebar.title("⚙️ CONFIGURACIÓN")
+
+modo = st.sidebar.selectbox("Modo", ["Automático", "Manual"])
+
+sensibilidad = st.sidebar.selectbox(
+    "Perfil de riesgo",
+    ["Conservador", "Equilibrado", "Agresivo"]
+)
+
+precio_min = st.sidebar.number_input("Precio mínimo", value=0.1)
+precio_max = st.sidebar.number_input("Precio máximo", value=200.0)
+
+vol_min = st.sidebar.number_input("Volumen mínimo", value=100000)
+vol_max = st.sidebar.number_input("Volumen máximo", value=1000000000)
+
+# Lista base automática (tipo Webull)
+tickers_auto = [
+    "TSLA","NVDA","AMD","AAPL","AMZN","META","PLTR","SOFI",
+    "RIOT","MARA","COIN","LCID","RIVN","GME","AMC"
+]
+
+if modo == "Manual":
+    tickers_input = st.sidebar.text_input("Tickers", "TSLA,NVDA,AMD")
+    tickers = [x.strip().upper() for x in tickers_input.split(",")]
+else:
+    tickers = tickers_auto
+
+# Sensibilidad numérica
+map_sens = {
+    "Conservador": 7,
+    "Equilibrado": 5,
+    "Agresivo": 3
+}
+sensibilidad_valor = map_sens[sensibilidad]
+
 # ===================== FUNCIONES =====================
 
-def calcular_indicadores(df):
+def indicadores(df):
     df['ema9'] = df['Close'].ewm(span=9).mean()
     df['ema20'] = df['Close'].ewm(span=20).mean()
-
-    tp = (df['High'] + df['Low'] + df['Close']) / 3
-    df['vwap'] = (tp * df['Volume']).cumsum() / df['Volume'].cumsum()
 
     delta = df['Close'].diff()
     gain = delta.clip(lower=0).rolling(14).mean()
@@ -22,106 +53,84 @@ def calcular_indicadores(df):
     rs = gain / loss
     df['rsi'] = 100 - (100 / (1 + rs))
 
-    df['atr'] = (df['High'] - df['Low']).rolling(14).mean()
-
-    # Momentum %
-    df['momentum'] = df['Close'].pct_change(3) * 100
-
-    # Volumen explosivo
     df['vol_avg'] = df['Volume'].rolling(20).mean()
     df['vol_ratio'] = df['Volume'] / df['vol_avg']
+
+    df['momentum'] = df['Close'].pct_change(3) * 100
 
     return df
 
 
-def detectar_breakout(df):
-    high_20 = df['High'].rolling(20).max().iloc[-2]
-    return df['Close'].iloc[-1] > high_20
-
-
-def obtener_score(df):
+def score(df):
     last = df.iloc[-1]
-    score = 0
+    s = 0
 
-    if last['Close'] > last['vwap']:
-        score += 2
+    if last['ema9'] > last['ema20']: s += 2
+    if last['rsi'] > 55: s += 2
+    if last['vol_ratio'] > 2: s += 3
+    if last['momentum'] > 2: s += 3
 
-    if last['ema9'] > last['ema20']:
-        score += 2
-
-    if last['rsi'] > 55:
-        score += 1
-
-    if last['vol_ratio'] > 2:
-        score += 2
-
-    if last['momentum'] > 2:
-        score += 2
-
-    if detectar_breakout(df):
-        score += 3
-
-    return score
+    return s
 
 
-def estrategia_scalping(df):
+def estrategia(df):
     last = df.iloc[-1]
 
     if last['rsi'] > 70:
-        return "⚠️ Esperar pullback (sobrecompra)"
+        return "⚠️ Esperar retroceso"
 
-    if last['ema9'] > last['ema20'] and last['Close'] > last['vwap']:
-        return "🟢 Entrada en pullback a EMA9"
+    if last['ema9'] > last['ema20']:
+        return "🟢 Entrada en pullback"
 
-    if detectar_breakout(df):
-        return "🚀 Entrada en breakout"
-
-    return "⚖️ Sin confirmación"
+    return "⚖️ Esperar"
 
 
 # ===================== UI =====================
 
-st.title("⚡ THUNDER RADAR PRO - SCALPING")
+st.title("⚡ THUNDER RADAR PRO")
 
-sensibilidad = st.slider("Sensibilidad", 3, 10, 5)
-
-tickers = st.text_input("Tickers", "IMMP,BIRD,AGAE,VSA,TSLA,NVDA,AMD").split(",")
-
-if st.button("🚀 ESCANEAR"):
+if st.button("🚀 ESCANEAR MERCADO"):
     resultados = []
 
     for t in tickers:
         try:
-            df = yf.download(t.strip(), period="1d", interval="5m", prepost=True, progress=False)
+            df = yf.download(t, period="1d", interval="5m", progress=False)
 
-            if df.empty or len(df) < 30:
+            if df.empty or len(df) < 20:
                 continue
 
-            df = calcular_indicadores(df)
-
-            score = obtener_score(df)
-
-            if score < sensibilidad:
-                continue
-
+            df = indicadores(df)
             last = df.iloc[-1]
+
+            precio = float(last['Close'])
+
+            if not (precio_min <= precio <= precio_max):
+                continue
+
+            if not (vol_min <= last['Volume'] <= vol_max):
+                continue
+
+            s = score(df)
+
+            if s < sensibilidad_valor:
+                continue
 
             resultados.append({
                 "Ticker": t,
-                "Precio": round(float(last['Close']), 2),
-                "Score": score,
-                "RSI": round(float(last['rsi']), 1),
-                "Momentum %": round(float(last['momentum']), 2),
-                "Vol Ratio": round(float(last['vol_ratio']), 2),
-                "Estrategia": estrategia_scalping(df)
+                "Precio": round(precio,2),
+                "Score": s,
+                "RSI": round(float(last['rsi']),1),
+                "Momentum %": round(float(last['momentum']),2),
+                "Volumen": int(last['Volume']),
+                "Estrategia": estrategia(df)
             })
 
         except Exception as e:
-            st.write(f"Error {t}: {e}")
-            continue
+            st.warning(f"{t}: {e}")
 
     if resultados:
         df_res = pd.DataFrame(resultados).sort_values(by="Score", ascending=False)
+        st.success(f"{len(df_res)} oportunidades encontradas")
         st.dataframe(df_res, use_container_width=True)
     else:
-        st.warning("No hay oportunidades")
+        st.error("No hay oportunidades con estos filtros")
