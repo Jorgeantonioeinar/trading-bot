@@ -11,49 +11,75 @@ from alpaca.trading.enums import OrderSide, TimeInForce
 
 # ================= CONFIG =================
 st.set_page_config(layout="wide")
-st.title("⚡ THUNDER RADAR PRO - AUTO TRADING REAL")
+st.title("⚡ THUNDER RADAR PRO - NIVEL PROFESIONAL")
 
-API_KEY = ["PKOKUMRZBCA2YJKVZIATSPGV5J"]
-SECRET = ["2UBriZpW7NooR1EvtowC63GcarFt7rEQFD9ofti9Ah6N"]
-
-alpaca = TradingClient(API_KEY, SECRET, paper=True)
+# ================= SECRETS =================
+try:
+    API_KEY = ["PKOKUMRZBCA2YJKVZIATSPGV5J"]
+    SECRET = ["2UBriZpW7NooR1EvtowC63GcarFt7rEQFD9ofti9Ah6N"]
+    alpaca = TradingClient(API_KEY, SECRET, paper=True)
+except:
+    st.error("❌ Configura tus claves en Secrets")
+    st.stop()
 
 # ================= SIDEBAR =================
 st.sidebar.title("⚙️ CONFIG")
 
 auto = st.sidebar.toggle("🤖 Auto Trading", False)
-qty = st.sidebar.number_input("Cantidad por trade", 1, 1000, 1)
+qty_manual = st.sidebar.number_input("Cantidad manual", 1, 1000, 1)
 
 min_score = st.sidebar.slider("Sensibilidad", 1, 10, 6)
-precio_min = st.sidebar.number_input("Precio mínimo", 0.1)
+
+precio_min = st.sidebar.number_input("Precio mínimo", 0.5)
 precio_max = st.sidebar.number_input("Precio máximo", 500.0)
 
-refresh = st.sidebar.checkbox("📡 Auto refresh (5s)")
-
-# ================= ALERTA SONIDO =================
-def alerta():
-    st.markdown("""
-    <audio autoplay>
-    <source src="https://www.soundjay.com/buttons/sounds/beep-07.mp3">
-    </audio>
-    """, unsafe_allow_html=True)
+auto_refresh = st.sidebar.checkbox("📡 Auto refresh (5s)")
 
 # ================= TOP GAINERS =================
 @st.cache_data(ttl=60)
 def get_gainers():
+
     url = "https://query1.finance.yahoo.com/v1/finance/screener/predefined/saved?scrIds=day_gainers&count=100"
-    data = requests.get(url).json()
-    return [q['symbol'] for q in data['finance']['result'][0]['quotes']]
+
+    headers = {"User-Agent": "Mozilla/5.0"}
+
+    try:
+        res = requests.get(url, headers=headers, timeout=5)
+
+        if res.status_code != 200:
+            raise Exception("HTTP error")
+
+        data = res.json()
+
+        quotes = data.get('finance', {}).get('result', [{}])[0].get('quotes', [])
+
+        tickers = [q.get('symbol') for q in quotes if q.get('symbol')]
+
+        if len(tickers) == 0:
+            raise Exception("Vacío")
+
+        return tickers
+
+    except:
+        st.warning("⚠️ Yahoo falló → usando backup")
+
+        return [
+            "TSLA","NVDA","AMD","AAPL","AMZN","META",
+            "PLTR","SOFI","COIN","RIOT","MARA",
+            "SMCI","IONQ","RKLB","LCID","RIVN",
+            "SPY","QQQ","TQQQ","SQQQ"
+        ]
 
 # ================= INDICADORES =================
 def analizar(df):
+
     df['ema9'] = df['Close'].ewm(span=9).mean()
     df['ema20'] = df['Close'].ewm(span=20).mean()
 
     df['vol_avg'] = df['Volume'].rolling(20).mean()
     df['vol_ratio'] = df['Volume'] / df['vol_avg']
 
-    df['momentum'] = df['Close'].pct_change(3)*100
+    df['momentum'] = df['Close'].pct_change(3) * 100
 
     df = df.replace([np.inf, -np.inf], np.nan).dropna()
 
@@ -70,16 +96,33 @@ def analizar(df):
 
     return score, last
 
-# ================= TRAILING =================
+# ================= GESTIÓN RIESGO =================
+def calcular_qty(precio):
+    balance = 10000  # ajustable
+    riesgo_pct = 0.01
+
+    stop = precio * 0.98
+    riesgo = precio - stop
+
+    if riesgo <= 0:
+        return 1
+
+    qty = int((balance * riesgo_pct) / riesgo)
+    return max(qty, 1)
+
+# ================= POSICIONES =================
 positions = {}
 
 def buy(symbol, price):
+    qty = calcular_qty(price)
+
     order = MarketOrderRequest(
         symbol=symbol,
         qty=qty,
         side=OrderSide.BUY,
         time_in_force=TimeInForce.DAY
     )
+
     alpaca.submit_order(order)
 
     positions[symbol] = {
@@ -90,21 +133,21 @@ def buy(symbol, price):
 def sell(symbol):
     order = MarketOrderRequest(
         symbol=symbol,
-        qty=qty,
+        qty=qty_manual,
         side=OrderSide.SELL,
         time_in_force=TimeInForce.DAY
     )
-    alpaca.submit_order(order)
 
+    alpaca.submit_order(order)
     positions.pop(symbol, None)
 
 # ================= AUTO REFRESH =================
-if refresh:
+if auto_refresh:
     time.sleep(5)
     st.rerun()
 
 # ================= MAIN =================
-if st.button("🚀 INICIAR RADAR") or refresh:
+if st.button("🚀 INICIAR RADAR") or auto_refresh:
 
     tickers = get_gainers()
     resultados = []
@@ -123,6 +166,10 @@ if st.button("🚀 INICIAR RADAR") or refresh:
             score, last = resultado
             precio = float(last['Close'])
 
+            # 🔴 FILTROS PROFESIONALES
+            if last['Volume'] < 50000:
+                continue
+
             if not (precio_min <= precio <= precio_max):
                 continue
 
@@ -138,17 +185,16 @@ if st.button("🚀 INICIAR RADAR") or refresh:
                 "Score": score
             })
 
-            # 🔔 ALERTA
+            # ================= COMPRA =================
             if score >= 7:
-                alerta()
                 st.success(f"🚀 DESPEGUE: {t}")
 
                 if auto and t not in positions:
                     buy(t, precio)
 
-            # 🔄 TRAILING
+            # ================= TRAILING =================
             if t in positions:
-                trail = max(positions[t]["trail"], precio * 0.99)
+                trail = max(positions[t]["trail"], precio * 0.995)
                 positions[t]["trail"] = trail
 
                 if precio < trail:
@@ -163,4 +209,4 @@ if st.button("🚀 INICIAR RADAR") or refresh:
         df_res = pd.DataFrame(resultados).sort_values(by="Score", ascending=False)
         st.dataframe(df_res, use_container_width=True)
     else:
-        st.warning("No hay oportunidades ahora")
+        st.warning("⚠️ No hay oportunidades ahora")
