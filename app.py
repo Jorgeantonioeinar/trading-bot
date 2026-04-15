@@ -1,113 +1,67 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-import yfinance as yf
 import time
-import os
 
-# ================== CONFIG ==================
+# Alpaca
+from alpaca.trading.client import TradingClient
+from alpaca.trading.requests import MarketOrderRequest
+from alpaca.trading.enums import OrderSide, TimeInForce
+
+from alpaca.data.historical import StockHistoricalDataClient
+from alpaca.data.requests import StockBarsRequest
+from alpaca.data.timeframe import TimeFrame
+
+# ================= CONFIG =================
 st.set_page_config(layout="wide")
-st.title("⚡ THUNDER RADAR PRO MAX")
+st.title("⚡ THUNDER RADAR PRO - AUTO TRADING")
 
-# 🔐 API KEYS (Streamlit secrets)
-API_KEY = st.secrets.get("PKOKUMRZBCA2YJKVZIATSPGV5J", None)
-SECRET_KEY = st.secrets.get("2UBriZpW7NooR1EvtowC63GcarFt7rEQFD9ofti9Ah6N", None)
+API_KEY = st.secrets["PKOKUMRZBCA2YJKVZIATSPGV5J"]
+SECRET_KEY = st.secrets["2UBriZpW7NooR1EvtowC63GcarFt7rEQFD9ofti9Ah6N"]
 
-# Intentar Alpaca
-use_alpaca = False
-if API_KEY and SECRET_KEY:
-    try:
-        from alpaca.data.historical import StockHistoricalDataClient
-        from alpaca.data.requests import StockBarsRequest
-        from alpaca.data.timeframe import TimeFrame
+trading_client = TradingClient(API_KEY, SECRET_KEY, paper=True)
+data_client = StockHistoricalDataClient(API_KEY, SECRET_KEY)
 
-        data_client = StockHistoricalDataClient(API_KEY, SECRET_KEY)
-        use_alpaca = True
-    except:
-        use_alpaca = False
-
-# ===================== SIDEBAR =====================
+# ================= SIDEBAR =================
 st.sidebar.title("⚙️ CONFIGURACIÓN")
 
-perfil = st.sidebar.selectbox(
-    "Sensibilidad",
-    ["Conservador", "Equilibrado", "Agresivo"]
-)
-
-auto_trade = st.sidebar.toggle("🤖 Auto Trading", False)
-cantidad = st.sidebar.number_input("Cantidad", 1, 1000, 1)
-
-precio_min = st.sidebar.number_input("Precio mínimo", 0.1)
-precio_max = st.sidebar.number_input("Precio máximo", 200.0)
-
-vol_min = st.sidebar.number_input("Volumen mínimo", 10000)
-vol_max = st.sidebar.number_input("Volumen máximo", 1000000000)
+auto_mode = st.sidebar.toggle("🤖 Auto Trading", False)
+qty = st.sidebar.number_input("Cantidad", 1, 1000, 1)
 
 tickers = st.sidebar.text_input(
     "Tickers",
-    "TSLA,NVDA,AMD,AAPL,PLTR,SOFI"
+    "TSLA,NVDA,AMD,AAPL"
 ).split(",")
 
 tickers = [t.strip().upper() for t in tickers]
 
-map_sens = {"Conservador":7,"Equilibrado":5,"Agresivo":3}
-sensibilidad = map_sens[perfil]
-
-# ===================== DATA =====================
-
+# ================= DATA =================
 def get_data(symbol):
-    # 👉 1. Intentar Alpaca
-    if use_alpaca:
-        try:
-            req = StockBarsRequest(
-                symbol_or_symbols=symbol,
-                timeframe=TimeFrame.Minute,
-                limit=50
-            )
-            bars = data_client.get_stock_bars(req).df
+    req = StockBarsRequest(
+        symbol_or_symbols=symbol,
+        timeframe=TimeFrame.Minute,
+        limit=100
+    )
+    bars = data_client.get_stock_bars(req).df
 
-            if not bars.empty:
-                df = bars.reset_index()
-
-                # 🔥 NORMALIZAR COLUMNAS
-                df = df[df['symbol'] == symbol]
-
-                df = df.rename(columns={
-                    'close': 'Close',
-                    'high': 'High',
-                    'low': 'Low',
-                    'volume': 'Volume'
-                })
-
-                return df[['Close','High','Low','Volume']]
-
-        except Exception as e:
-            st.warning(f"Alpaca fallo {symbol}")
-
-    # 👉 2. Fallback yfinance
-    try:
-        df = yf.download(symbol, period="1d", interval="1m", progress=False)
-
-        # 🔥 ARREGLAR MULTIINDEX
-        if isinstance(df.columns, pd.MultiIndex):
-            df.columns = df.columns.get_level_values(0)
-
-        return df[['Close','High','Low','Volume']].dropna()
-
-    except:
+    if bars.empty:
         return pd.DataFrame()
 
-# ===================== INDICADORES =====================
+    df = bars.reset_index()
+    df = df[df['symbol'] == symbol]
 
+    df = df.rename(columns={
+        'close':'Close',
+        'high':'High',
+        'low':'Low',
+        'open':'Open',
+        'volume':'Volume'
+    })
+
+    return df
+
+# ================= INDICADORES =================
 def indicadores(df):
-    df = df.copy()
-
-    # 🔥 asegurar tipos correctos
-    df['Close'] = pd.to_numeric(df['Close'], errors='coerce')
-    df['Volume'] = pd.to_numeric(df['Volume'], errors='coerce')
-
-    df = df.dropna()
-
     df['ema9'] = df['Close'].ewm(span=9).mean()
     df['ema20'] = df['Close'].ewm(span=20).mean()
 
@@ -115,47 +69,76 @@ def indicadores(df):
     gain = delta.clip(lower=0).rolling(14).mean()
     loss = -delta.clip(upper=0).rolling(14).mean()
 
-    rs = gain / loss.replace(0, np.nan)
-    df['rsi'] = 100 - (100 / (1 + rs))
+    rs = gain / loss.replace(0,np.nan)
+    df['rsi'] = 100 - (100/(1+rs))
 
     df['vol_avg'] = df['Volume'].rolling(20).mean()
+    df['vol_ratio'] = df['Volume'] / df['vol_avg']
 
-    # 🔥 PROTECCIÓN TOTAL
-    df['vol_ratio'] = df['Volume'].div(df['vol_avg']).replace([np.inf, -np.inf], np.nan)
+    df['momentum'] = df['Close'].pct_change(3)*100
 
-    df['momentum'] = df['Close'].pct_change(3) * 100
-
-    df = df.dropna()
-
+    df = df.replace([np.inf,-np.inf],np.nan).dropna()
     return df
 
-# ===================== LÓGICA =====================
-
-def detectar_despegue(df):
+# ================= LOGICA =================
+def detectar_compra(df):
     last = df.iloc[-1]
-    return sum([
-        last['momentum'] > 1.2,
-        last['vol_ratio'] > 1.8,
-        last['Close'] > last['ema9']
-    ])
+    return (
+        last['ema9'] > last['ema20'] and
+        last['momentum'] > 1 and
+        last['vol_ratio'] > 1.5 and
+        last['rsi'] < 70
+    )
+
+def detectar_venta(df):
+    last = df.iloc[-1]
+    return (
+        last['Close'] < last['ema9'] or
+        last['rsi'] > 75 or
+        last['momentum'] < -0.5
+    )
 
 def atr(df):
     return (df['High'] - df['Low']).rolling(14).mean().iloc[-1]
 
-# ===================== AUTO REFRESH =====================
+# ================= TRAILING =================
+positions = {}
+
+def ejecutar_compra(symbol, precio):
+    order = MarketOrderRequest(
+        symbol=symbol,
+        qty=qty,
+        side=OrderSide.BUY,
+        time_in_force=TimeInForce.DAY
+    )
+    trading_client.submit_order(order)
+
+    positions[symbol] = {
+        "entry": precio,
+        "trail": precio * 0.98
+    }
+
+def ejecutar_venta(symbol):
+    order = MarketOrderRequest(
+        symbol=symbol,
+        qty=qty,
+        side=OrderSide.SELL,
+        time_in_force=TimeInForce.DAY
+    )
+    trading_client.submit_order(order)
+
+    positions.pop(symbol, None)
+
+# ================= MAIN =================
 if st.sidebar.checkbox("📡 Auto refresh 5s"):
     time.sleep(5)
     st.rerun()
 
-# ===================== MAIN =====================
-
 if st.button("🚀 ESCANEAR"):
-    resultados = []
-
     for t in tickers:
         df = get_data(t)
 
-        if df.empty or len(df) < 30:
+        if df.empty:
             continue
 
         df = indicadores(df)
@@ -163,51 +146,42 @@ if st.button("🚀 ESCANEAR"):
             continue
 
         last = df.iloc[-1]
-
         precio = float(last['Close'])
 
-        if not (precio_min <= precio <= precio_max):
-            continue
-
-        if not (vol_min <= last['Volume'] <= vol_max):
-            continue
-
-        despegue = detectar_despegue(df)
-
-        score = 0
-        if last['ema9'] > last['ema20']: score += 3
-        if last['rsi'] > 50: score += 2
-        if last['vol_ratio'] > 2: score += 3
-        if last['momentum'] > 2: score += 2
-
-        if score < sensibilidad:
-            continue
+        compra = detectar_compra(df)
+        venta = detectar_venta(df)
 
         atr_val = atr(df)
-        resultados.append({
-            "Ticker": t,
-            "Precio": round(precio,2),
-            "🔥 Despegue": despegue,
-            "Score": score,
-            "RSI": round(last['rsi'],1),
-            "Vol Ratio": round(last['vol_ratio'],2),
-            "SL": round(precio - atr_val*1.5,2),
-            "TP": round(precio + atr_val*2,2)
-        })
 
-    if resultados:
-        df_res = pd.DataFrame(resultados).sort_values(by="🔥 Despegue", ascending=False)
-        st.dataframe(df_res, use_container_width=True)
+        # 📊 GRAFICO VELAS
+        st.subheader(f"{t}")
+        st.line_chart(df[['Close']])
 
-        top = df_res.iloc[0]
+        st.write(f"Precio: {precio}")
 
-        if top["🔥 Despegue"] >= 2:
-            st.warning(f"🔥 DESPEGUE: {top['Ticker']}")
+        # ================= COMPRA =================
+        if compra:
+            st.success(f"🟢 COMPRA: {t}")
 
-        st.line_chart(get_data(top['Ticker'])['Close'])
+            if auto_mode and t not in positions:
+                ejecutar_compra(t, precio)
 
-        if auto_trade:
-            st.success(f"🤖 Auto listo para ejecutar {top['Ticker']} x{cantidad}")
+        # ================= TRAILING =================
+        if t in positions:
+            pos = positions[t]
 
-    else:
-        st.error("❌ No hay oportunidades")
+            nuevo_trail = max(pos["trail"], precio - atr_val)
+            positions[t]["trail"] = nuevo_trail
+
+            st.write(f"Trailing Stop: {nuevo_trail}")
+
+            if precio < nuevo_trail:
+                st.warning(f"🔴 TRAILING STOP ACTIVADO: {t}")
+                if auto_mode:
+                    ejecutar_venta(t)
+
+        # ================= VENTA =================
+        if venta and t in positions:
+            st.error(f"🔻 VENTA: {t}")
+            if auto_mode:
+                ejecutar_venta(t)
