@@ -8,748 +8,800 @@ from alpaca.trading.enums import OrderSide, TimeInForce
 from datetime import datetime
 import pytz
 import time
+import warnings
+warnings.filterwarnings("ignore")
 
-# ─────────────────────────────────────────────
-#  CONFIGURACIÓN DE PÁGINA
-# ─────────────────────────────────────────────
-st.set_page_config(
-    page_title="THUNDER RADAR V90 ULTRA",
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
+# ══════════════════════════════════════════════════════════════
+#  PÁGINA
+# ══════════════════════════════════════════════════════════════
+st.set_page_config(page_title="⚡ THUNDER RADAR V90", layout="wide", initial_sidebar_state="expanded")
 
-# ─────────────────────────────────────────────
-#  ESTILOS ULTRA PRO
-# ─────────────────────────────────────────────
 st.markdown("""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700;900&family=Share+Tech+Mono&display=swap');
-
-html, body, [class*="css"] {
-    background-color: #050a14 !important;
-    color: #c9d1d9 !important;
-    font-family: 'Share Tech Mono', monospace;
+html, body, [class*="css"] { background:#050a14 !important; color:#c9d1d9 !important; font-family:'Share Tech Mono',monospace; }
+h1,h2,h3 { font-family:'Orbitron',sans-serif !important; }
+.stButton>button { width:100%; border-radius:4px; font-weight:bold; font-family:'Orbitron',sans-serif;
+    letter-spacing:1px; border:1px solid #30363d; transition:all .2s; }
+.stButton>button:hover { transform:translateY(-1px); box-shadow:0 0 14px rgba(0,255,136,.5); }
+div[data-testid="metric-container"] { background:linear-gradient(135deg,#0d1117,#161b22);
+    border:1px solid #21262d; border-radius:8px; padding:12px; }
+.boom-card {
+    background:linear-gradient(135deg,#0a1f12,#0d1117);
+    border:2px solid #00ff88; border-radius:10px; padding:14px 18px; margin:6px 0;
+    box-shadow: 0 0 14px #00ff8844;
 }
-
-h1, h2, h3 { font-family: 'Orbitron', sans-serif !important; }
-
-.stButton>button {
-    width: 100%;
-    border-radius: 4px;
-    font-weight: bold;
-    font-family: 'Orbitron', sans-serif;
-    letter-spacing: 1px;
-    border: 1px solid #30363d;
-    transition: all 0.2s;
+.boom-card-warn {
+    background:linear-gradient(135deg,#1f1a0a,#0d1117);
+    border:2px solid #ffc107; border-radius:10px; padding:14px 18px; margin:6px 0;
 }
-.stButton>button:hover { transform: translateY(-1px); box-shadow: 0 0 12px rgba(0,255,136,0.4); }
-
-div[data-testid="metric-container"] {
-    background: linear-gradient(135deg, #0d1117 0%, #161b22 100%);
-    border: 1px solid #21262d;
-    border-radius: 8px;
-    padding: 12px;
-}
-
-.score-bar-up   { color: #00ff88; font-weight: bold; font-size: 1.1em; }
-.score-bar-down { color: #ff4444; font-weight: bold; font-size: 1.1em; }
-.badge-buy  { background:#00ff88; color:#000; padding:2px 8px; border-radius:4px; font-weight:bold; font-size:0.75em; }
-.badge-sell { background:#ff4444; color:#fff; padding:2px 8px; border-radius:4px; font-weight:bold; font-size:0.75em; }
-.badge-neutral { background:#ffc107; color:#000; padding:2px 8px; border-radius:4px; font-weight:bold; font-size:0.75em; }
-.badge-premarket  { background:#7c3aed; color:#fff; padding:2px 8px; border-radius:4px; font-size:0.75em; }
-.badge-afterhours { background:#0369a1; color:#fff; padding:2px 8px; border-radius:4px; font-size:0.75em; }
-.badge-regular    { background:#15803d; color:#fff; padding:2px 8px; border-radius:4px; font-size:0.75em; }
-
+.score-10   { color:#00ff88; font-size:1.6em; font-weight:900; font-family:'Orbitron',sans-serif; }
+.score-high { color:#7cfc00; font-size:1.4em; font-weight:700; }
+.score-mid  { color:#ffc107; font-size:1.2em; font-weight:700; }
+.ticker-name { font-family:'Orbitron',sans-serif; font-size:1.25em; font-weight:700; color:#fff; }
+.label-dim { color:#8b949e; font-size:0.78em; }
 .header-glow {
-    text-align: center;
-    font-family: 'Orbitron', sans-serif;
-    font-size: 2.2em;
-    font-weight: 900;
-    background: linear-gradient(90deg, #00ff88, #00b4d8, #7c3aed);
-    -webkit-background-clip: text;
-    -webkit-text-fill-color: transparent;
-    letter-spacing: 3px;
-    margin-bottom: 0;
+    text-align:center; font-family:'Orbitron',sans-serif; font-size:2.2em; font-weight:900;
+    background:linear-gradient(90deg,#00ff88,#00b4d8,#7c3aed);
+    -webkit-background-clip:text; -webkit-text-fill-color:transparent; letter-spacing:3px;
 }
-
-.subheader-dim { text-align:center; color:#8b949e; font-size:0.85em; margin-top:0; letter-spacing:4px; }
-
-table { width: 100%; }
-thead tr th { background-color: #161b22 !important; color: #00ff88 !important; font-family: 'Orbitron', sans-serif; font-size: 0.75em; }
+.subheader-dim { text-align:center; color:#8b949e; font-size:.83em; letter-spacing:4px; margin-top:0; }
+.session-badge { display:inline-block; padding:3px 12px; border-radius:20px; font-size:.8em; font-weight:bold; }
+.badge-regular    { background:#15803d; color:#fff; }
+.badge-premarket  { background:#7c3aed; color:#fff; }
+.badge-afterhours { background:#0369a1; color:#fff; }
+.badge-closed     { background:#374151; color:#fff; }
+.live-dot { display:inline-block; width:9px; height:9px; background:#00ff88;
+    border-radius:50%; margin-right:6px; animation:blink 1s infinite; }
+@keyframes blink { 0%,100%{opacity:1} 50%{opacity:0.15} }
+.divider-neon { border:none; border-top:1px solid #00ff8833; margin:16px 0; }
 </style>
 """, unsafe_allow_html=True)
 
-# ─────────────────────────────────────────────
-#  CREDENCIALES ALPACA
-# ─────────────────────────────────────────────
+# ══════════════════════════════════════════════════════════════
+#  ALPACA
+# ══════════════════════════════════════════════════════════════
 ALPACA_API_KEY    = "PKOKUMRZBCA2YJKVZIATSPGV5J"
 ALPACA_SECRET_KEY = "2UBriZpW7NooR1EvtowC63GcarFt7rEQFD9ofti9Ah6N"
 
 @st.cache_resource
 def get_alpaca():
     return TradingClient(ALPACA_API_KEY, ALPACA_SECRET_KEY, paper=True)
-
 alpaca = get_alpaca()
 
-# ─────────────────────────────────────────────
-#  UNIVERSO DE ACCIONES (200+)
-# ─────────────────────────────────────────────
-UNIVERSO_COMPLETO = [
-    # Mega-cap tech
+# ══════════════════════════════════════════════════════════════
+#  UNIVERSO 220+ TICKERS
+# ══════════════════════════════════════════════════════════════
+UNIVERSO = [
     "AAPL","MSFT","GOOGL","AMZN","META","NVDA","TSLA","NFLX","AMD","INTC",
-    # Semiconductores
-    "AVGO","QCOM","MU","AMAT","LRCX","KLAC","MRVL","ON","TXN","ADI",
-    # Fintech / Cripto proxy
-    "COIN","HOOD","MSTR","RIOT","MARA","HUT","CIFR","BTBT","CLSK","WULF",
-    # EV / Clean Energy
-    "NIO","XPEV","LI","RIVN","LCID","CHPT","BLNK","PLUG","FCEL","BE",
-    # Biotech / Pharma
-    "MRNA","BNTX","NVAX","VRTX","REGN","BIIB","GILD","ABBV","PFE","JNJ",
-    # Meme / Alta volatilidad
-    "GME","AMC","BBBY","KOSS","EXPR","BB","NOK","SNDL","CLOV","WISH",
-    # Cloud / SaaS
-    "CRM","NOW","SNOW","DDOG","ZS","CRWD","OKTA","PLTR","S","NET",
-    # Retail / Consumer
-    "WMT","TGT","COST","HD","LOW","NKE","SBUX","MCD","DIS","CMCSA",
-    # Financiero
-    "JPM","BAC","GS","MS","WFC","C","BLK","SCHW","AXP","V",
-    # Healthcare
-    "UNH","CVS","MCK","ABC","AET","HUM","CI","MOH","CNC","WCG",
-    # Industrial / Defensa
-    "BA","LMT","RTX","NOC","GD","CAT","DE","MMM","HON","GE",
-    # Media / Entretenimiento
-    "PARA","WBD","FOXA","NWSA","NYT","SPOT","ROKU","FUBO","SIRI","LUMN",
-    # Speculative / Small cap alta vol
-    "SOFI","UPST","AFRM","OPEN","OPENDOOR","LMND","ROOT","HIMS","BABA","JD",
-    "TCOM","PDD","DIDI","TUYA","TIGR","FUTU","LNKD","GRAB","SEA","SHOP",
-    # ETFs de momentum
-    "QQQ","SPY","IWM","SOXL","TQQQ","ARKK","XLE","XLF","XLK","UVXY",
-    # Más acciones volátiles
-    "PTON","ZM","DOCU","TDOC","LYFT","UBER","DASH","ABNB","VRBO","W",
-    "ETSY","EBAY","PINS","SNAP","TWTR","RBLX","U","MTTR","IONQ","RGTI",
+    "AVGO","QCOM","MU","AMAT","LRCX","KLAC","MRVL","ON","TXN","ADI","SMCI",
+    "COIN","HOOD","MSTR","RIOT","MARA","HUT","CIFR","BTBT","CLSK","WULF","HIVE",
+    "NIO","XPEV","LI","RIVN","LCID","CHPT","BLNK","PLUG","FCEL","BE","HYLN",
+    "MRNA","BNTX","NVAX","VRTX","REGN","BIIB","GILD","ABBV","PFE","SRPT","ACAD",
+    "GME","AMC","KOSS","BB","NOK","SNDL","BBIG","SPCE","NKLA","MULN",
+    "CRM","NOW","SNOW","DDOG","ZS","CRWD","OKTA","PLTR","NET","HUBS","BILL",
+    "SOFI","UPST","AFRM","OPEN","LMND","ROOT","HIMS","OPFI","DAVE",
+    "BABA","JD","PDD","TCOM","GRAB","SE","TIGR","FUTU",
+    "IONQ","RGTI","QUBT","ASTS","LUNR","RKLB","ACHR","JOBY","LILM",
+    "WMT","TGT","COST","HD","LOW","NKE","SBUX","MCD","ETSY","EBAY",
+    "PARA","WBD","FOXA","SPOT","ROKU","FUBO","SIRI","IMAX","NWSA","LUMN",
+    "QQQ","SPY","IWM","SOXL","TQQQ","ARKK","UVXY","SOXS","LABU","NAIL",
+    "BA","LMT","RTX","NOC","GD","CAT","DE","GE","HON","MMM",
+    "JPM","BAC","GS","MS","WFC","C","BLK","SCHW","AXP","V","PYPL",
+    "UNH","CVS","HUM","CI","ISRG","BSX","MDT","EW","ZBH","DXCM",
+    "CLOV","WKHS","FSR","GOEV","IDEX","MVIS","PROG","ATER","CELH","SKIN",
+    "RBLX","U","SNAP","PINS","HOOD","RIVN","LCID","SPCE","ASTR","MNTS",
 ]
-# Deduplicar
-UNIVERSO_COMPLETO = list(dict.fromkeys(UNIVERSO_COMPLETO))
+UNIVERSO = list(dict.fromkeys(UNIVERSO))
 
-# ─────────────────────────────────────────────
-#  HELPERS DE SESIÓN DE MERCADO
-# ─────────────────────────────────────────────
-def get_market_session():
-    tz  = pytz.timezone('US/Eastern')
+# ══════════════════════════════════════════════════════════════
+#  SESIÓN DE MERCADO
+# ══════════════════════════════════════════════════════════════
+def get_session():
+    tz  = pytz.timezone("US/Eastern")
     now = datetime.now(tz)
-    pre_open     = now.replace(hour=4,  minute=0,  second=0, microsecond=0)
-    market_open  = now.replace(hour=9,  minute=30, second=0, microsecond=0)
-    market_close = now.replace(hour=16, minute=0,  second=0, microsecond=0)
-    after_close  = now.replace(hour=20, minute=0,  second=0, microsecond=0)
+    h   = now.hour + now.minute / 60.0
+    if   4.0 <= h < 9.5:  return "PRE-MARKET"
+    elif 9.5 <= h < 16.0: return "REGULAR"
+    elif 16.0<= h < 20.0: return "AFTER-HOURS"
+    else:                  return "CERRADO"
 
-    if now < pre_open:        return "CERRADO"
-    elif now < market_open:   return "PRE-MARKET"
-    elif now < market_close:  return "REGULAR"
-    elif now < after_close:   return "AFTER-HOURS"
-    else:                     return "CERRADO"
+SESSION = get_session()
 
-SESSION_BADGES = {
-    "PRE-MARKET":  "badge-premarket",
-    "AFTER-HOURS": "badge-afterhours",
-    "REGULAR":     "badge-regular",
-    "CERRADO":     "badge-neutral",
+# Config por sesión: (interval, period, prepost, cambio_min_dflt, vol_min_dflt)
+SESSION_CFG = {
+    "PRE-MARKET":  ("1m","1d", True,  0.25, 300),
+    "REGULAR":     ("1m","1d", True,  0.80, 2000),
+    "AFTER-HOURS": ("1m","1d", True,  0.15, 200),
+    "CERRADO":     ("5m","5d", False, 0.50, 500),
 }
 
-session = get_market_session()
+# ══════════════════════════════════════════════════════════════
+#  INDICADORES TÉCNICOS
+# ══════════════════════════════════════════════════════════════
+def calcular_indicadores(df: pd.DataFrame):
+    try:
+        df = df.copy()
+        if len(df) < 5:
+            return None
 
-# ─────────────────────────────────────────────
-#  CÁLCULOS TÉCNICOS COMPLETOS
-# ─────────────────────────────────────────────
-def calcular_indicadores(df: pd.DataFrame) -> pd.DataFrame:
-    df = df.copy()
-    # EMAs
-    df['ema_9']  = df['Close'].ewm(span=9,  adjust=False).mean()
-    df['ema_20'] = df['Close'].ewm(span=20, adjust=False).mean()
-    df['ema_50'] = df['Close'].ewm(span=50, adjust=False).mean()
+        # Aplanar MultiIndex si existe
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.get_level_values(0)
 
-    # VWAP (intraday)
-    tp = (df['High'] + df['Low'] + df['Close']) / 3
-    df['vwap'] = (tp * df['Volume']).cumsum() / df['Volume'].cumsum()
+        # Asegurar que son Series 1D
+        close = df["Close"].squeeze()
+        high  = df["High"].squeeze()
+        low   = df["Low"].squeeze()
+        vol   = df["Volume"].squeeze()
 
-    # RSI 14
-    delta = df['Close'].diff()
-    gain  = delta.where(delta > 0, 0).rolling(14).mean()
-    loss  = (-delta.where(delta < 0, 0)).rolling(14).mean()
-    rs    = gain / loss.replace(0, np.nan)
-    df['rsi'] = 100 - (100 / (1 + rs))
+        if isinstance(close, pd.DataFrame): close = close.iloc[:,0]
+        if isinstance(high,  pd.DataFrame): high  = high.iloc[:,0]
+        if isinstance(low,   pd.DataFrame): low   = low.iloc[:,0]
+        if isinstance(vol,   pd.DataFrame): vol   = vol.iloc[:,0]
 
-    # MACD
-    ema12 = df['Close'].ewm(span=12, adjust=False).mean()
-    ema26 = df['Close'].ewm(span=26, adjust=False).mean()
-    df['macd']        = ema12 - ema26
-    df['macd_signal'] = df['macd'].ewm(span=9, adjust=False).mean()
-    df['macd_hist']   = df['macd'] - df['macd_signal']
+        df["close"] = close.values
+        df["high"]  = high.values
+        df["low"]   = low.values
+        df["vol"]   = vol.values
 
-    # Bandas de Bollinger
-    sma20 = df['Close'].rolling(20).mean()
-    std20 = df['Close'].rolling(20).std()
-    df['bb_upper'] = sma20 + 2 * std20
-    df['bb_lower'] = sma20 - 2 * std20
-    df['bb_mid']   = sma20
+        c = df["close"]
+        h = df["high"]
+        l = df["low"]
+        v = df["vol"]
 
-    # ATR 14
-    hl  = df['High'] - df['Low']
-    hc  = (df['High'] - df['Close'].shift(1)).abs()
-    lc  = (df['Low']  - df['Close'].shift(1)).abs()
-    df['atr'] = pd.concat([hl, hc, lc], axis=1).max(axis=1).rolling(14).mean()
+        df["ema9"]  = c.ewm(span=9,  adjust=False).mean()
+        df["ema20"] = c.ewm(span=20, adjust=False).mean()
+        df["ema50"] = c.ewm(span=50, adjust=False).mean()
 
-    # Soporte y Resistencia (pivots simples con ventana de 20 velas)
-    df['soporte']    = df['Low'].rolling(20).min()
-    df['resistencia']= df['High'].rolling(20).max()
+        tp = (h + l + c) / 3
+        df["vwap"] = (tp * v).cumsum() / v.cumsum().replace(0, np.nan)
 
-    # Volumen promedio 20 velas
-    df['vol_avg20'] = df['Volume'].rolling(20).mean()
+        delta = c.diff()
+        gain  = delta.where(delta > 0, 0.0).rolling(14).mean()
+        loss  = (-delta.where(delta < 0, 0.0)).rolling(14).mean()
+        df["rsi"] = 100 - 100 / (1 + gain / loss.replace(0, np.nan))
 
-    # Stochastic %K %D
-    low14  = df['Low'].rolling(14).min()
-    high14 = df['High'].rolling(14).max()
-    df['stoch_k'] = 100 * (df['Close'] - low14) / (high14 - low14).replace(0, np.nan)
-    df['stoch_d'] = df['stoch_k'].rolling(3).mean()
+        ema12 = c.ewm(span=12, adjust=False).mean()
+        ema26 = c.ewm(span=26, adjust=False).mean()
+        df["macd"]   = ema12 - ema26
+        df["macd_s"] = df["macd"].ewm(span=9, adjust=False).mean()
+        df["macd_h"] = df["macd"] - df["macd_s"]
 
-    return df
+        sma20 = c.rolling(20).mean()
+        std20 = c.rolling(20).std()
+        df["bb_up"] = sma20 + 2 * std20
+        df["bb_lo"] = sma20 - 2 * std20
+
+        hl  = h - l
+        hc  = (h - c.shift(1)).abs()
+        lc  = (l - c.shift(1)).abs()
+        df["atr"]  = pd.concat([hl, hc, lc], axis=1).max(axis=1).rolling(14).mean()
+        df["sup"]  = l.rolling(20).min()
+        df["res"]  = h.rolling(20).max()
+        df["vavg"] = v.rolling(20).mean()
+
+        low14  = l.rolling(14).min()
+        high14 = h.rolling(14).max()
+        df["stk"] = 100 * (c - low14) / (high14 - low14 + 1e-9)
+        df["std_k"] = df["stk"].rolling(3).mean()
+
+        return df.dropna(subset=["close"])
+    except Exception:
+        return None
 
 
-def calcular_score(df: pd.DataFrame, session: str):
-    """Devuelve (score_alcista 1-10, score_bajista 1-10, señal, detalles)"""
+# ══════════════════════════════════════════════════════════════
+#  SCORE EXPLOSIÓN 1-10
+# ══════════════════════════════════════════════════════════════
+def score_explosion(df, session: str):
+    if df is None or len(df) < 5:
+        return 1, 1, "NEUTRO", {}
+
+    def safe(row, col, default=0.0):
+        try:
+            v = row[col]
+            return float(v) if not (isinstance(v, float) and np.isnan(v)) else default
+        except Exception:
+            return default
+
     a = df.iloc[-1]
     p = df.iloc[-2] if len(df) > 1 else df.iloc[-1]
+    b = df.iloc[-3] if len(df) > 2 else p
 
-    # ── Pesos según sesión ──────────────────────────────────────────
-    # En pre/after los volúmenes son bajos → reducimos peso del volumen
-    # y subimos sensibilidad de precio vs VWAP y EMAs cortas
+    precio   = safe(a, "close", 0)
+    precio_p = safe(p, "close", precio)
+    precio_b = safe(b, "close", precio_p)
+
     if session == "REGULAR":
-        w_vwap, w_ema, w_rsi, w_vol, w_macd, w_bb, w_stoch = 2, 2, 1.5, 1.5, 1, 1, 1
-    else:  # PRE / AFTER → más sensible a precio y EMAs
-        w_vwap, w_ema, w_rsi, w_vol, w_macd, w_bb, w_stoch = 2.5, 2.5, 1.5, 0.5, 1, 1, 1
+        W = dict(vwap=2.0, ema=2.0, rsi=1.5, vol=2.0, macd=1.5, bb=0.5, stoch=0.5)
+    else:
+        W = dict(vwap=2.5, ema=2.5, rsi=1.5, vol=0.8, macd=1.5, bb=0.5, stoch=0.5)
 
     up = down = 0.0
-    detalles = {}
+    det = {}
 
-    # VWAP
-    if a['Close'] > a['vwap']:
-        up += w_vwap; detalles['VWAP'] = '▲ Precio sobre VWAP'
+    # 1. VWAP
+    vwap = safe(a, "vwap", precio)
+    if precio > vwap:
+        up += W["vwap"]; det["VWAP"] = f"▲ Precio sobre VWAP ${vwap:.3f}"
     else:
-        down += w_vwap; detalles['VWAP'] = '▼ Precio bajo VWAP'
+        down += W["vwap"]; det["VWAP"] = f"▼ Precio bajo VWAP ${vwap:.3f}"
 
-    # EMA cruce 9/20
-    if a['ema_9'] > a['ema_20']:
-        up += w_ema; detalles['EMA'] = '▲ EMA9 > EMA20 (alcista)'
+    # 2. EMA9 vs EMA20
+    e9  = safe(a, "ema9",  precio)
+    e20 = safe(a, "ema20", precio)
+    if e9 > e20:
+        up += W["ema"]; det["EMA"] = f"▲ EMA9 ({e9:.3f}) > EMA20 ({e20:.3f})"
     else:
-        down += w_ema; detalles['EMA'] = '▼ EMA9 < EMA20 (bajista)'
+        down += W["ema"]; det["EMA"] = f"▼ EMA9 ({e9:.3f}) < EMA20 ({e20:.3f})"
 
-    # EMA precio vs EMA50
-    if a['Close'] > a['ema_50']:
-        up += 0.5; detalles['EMA50'] = '▲ Sobre EMA50'
+    # 3. RSI
+    rsi = safe(a, "rsi", 50)
+    if rsi > 60:
+        up += W["rsi"]; det["RSI"] = f"▲ RSI fuerte {rsi:.0f}"
+    elif rsi < 40:
+        down += W["rsi"]; det["RSI"] = f"▼ RSI débil {rsi:.0f}"
+    elif rsi >= 50:
+        up += W["rsi"] * 0.5; det["RSI"] = f"→ RSI {rsi:.0f}"
     else:
-        down += 0.5; detalles['EMA50'] = '▼ Bajo EMA50'
+        down += W["rsi"] * 0.5; det["RSI"] = f"→ RSI {rsi:.0f}"
 
-    # RSI
-    if a['rsi'] > 60:
-        up += w_rsi; detalles['RSI'] = f"▲ RSI fuerte ({a['rsi']:.0f})"
-    elif a['rsi'] < 40:
-        down += w_rsi; detalles['RSI'] = f"▼ RSI débil ({a['rsi']:.0f})"
-    elif a['rsi'] > 50:
-        up += w_rsi * 0.5; detalles['RSI'] = f"→ RSI neutro-alcista ({a['rsi']:.0f})"
-    else:
-        down += w_rsi * 0.5; detalles['RSI'] = f"→ RSI neutro-bajista ({a['rsi']:.0f})"
-
-    # Volumen vs promedio
-    vol_ratio = a['Volume'] / a['vol_avg20'] if a['vol_avg20'] > 0 else 1
-    if vol_ratio > 1.5:
-        if a['Close'] >= p['Close']:
-            up += w_vol; detalles['VOL'] = f"▲ Volumen explosivo ({vol_ratio:.1f}x avg)"
+    # 4. Volumen explosivo
+    vavg   = safe(a, "vavg", 1)
+    vol_a  = safe(a, "vol", 0)
+    vratio = vol_a / max(vavg, 1)
+    if vratio >= 2.0:
+        if precio >= precio_p:
+            up += W["vol"]; det["VOL"] = f"⚡ Volumen EXPLOSIVO {vratio:.1f}x"
         else:
-            down += w_vol; detalles['VOL'] = f"▼ Volumen bajista ({vol_ratio:.1f}x avg)"
+            down += W["vol"]; det["VOL"] = f"⚡ Volumen BAJISTA {vratio:.1f}x"
+    elif vratio >= 1.3:
+        if precio >= precio_p:
+            up += W["vol"] * 0.6; det["VOL"] = f"▲ Vol elevado {vratio:.1f}x"
+        else:
+            down += W["vol"] * 0.6; det["VOL"] = f"▼ Vol elevado bajista {vratio:.1f}x"
     else:
-        detalles['VOL'] = f"→ Volumen normal ({vol_ratio:.1f}x avg)"
+        det["VOL"] = f"→ Vol normal {vratio:.1f}x"
 
-    # MACD
-    if a['macd_hist'] > 0 and a['macd_hist'] > p.get('macd_hist', 0):
-        up += w_macd; detalles['MACD'] = '▲ MACD histograma creciente'
-    elif a['macd_hist'] < 0 and a['macd_hist'] < p.get('macd_hist', 0):
-        down += w_macd; detalles['MACD'] = '▼ MACD histograma cayendo'
-    elif a['macd'] > a['macd_signal']:
-        up += w_macd * 0.5; detalles['MACD'] = '→ MACD sobre señal'
+    # 5. MACD histograma 3 velas
+    mh_a = safe(a, "macd_h", 0)
+    mh_p = safe(p, "macd_h", 0)
+    mh_b = safe(b, "macd_h", 0)
+    if mh_a > mh_p > mh_b and mh_a > 0:
+        up += W["macd"]; det["MACD"] = "▲ MACD hist. subiendo 3 velas consecutivas"
+    elif mh_a < mh_p < mh_b and mh_a < 0:
+        down += W["macd"]; det["MACD"] = "▼ MACD hist. cayendo 3 velas consecutivas"
+    elif mh_a > 0:
+        up += W["macd"] * 0.4; det["MACD"] = "→ MACD positivo"
     else:
-        down += w_macd * 0.5; detalles['MACD'] = '→ MACD bajo señal'
+        down += W["macd"] * 0.4; det["MACD"] = "→ MACD negativo"
 
-    # Bollinger Bands
-    bb_pos = (a['Close'] - a['bb_lower']) / (a['bb_upper'] - a['bb_lower'] + 1e-9)
-    if bb_pos > 0.8:
-        up += w_bb * 0.5; detalles['BB'] = f"▲ Precio en zona alta BB ({bb_pos:.0%})"
-    elif bb_pos < 0.2:
-        down += w_bb; detalles['BB'] = f"▼ Precio en zona baja BB ({bb_pos:.0%})"
+    # 6. Bollinger Bands
+    bb_up = safe(a, "bb_up", precio * 1.02)
+    bb_lo = safe(a, "bb_lo", precio * 0.98)
+    bb_pos = (precio - bb_lo) / max(bb_up - bb_lo, 1e-9)
+    if bb_pos > 0.85:
+        up += W["bb"]; det["BB"] = f"▲ Rompiendo banda superior Bollinger"
+    elif bb_pos < 0.15:
+        down += W["bb"]; det["BB"] = f"▼ Precio en banda inferior Bollinger"
     else:
-        detalles['BB'] = f"→ BB zona media ({bb_pos:.0%})"
+        det["BB"] = f"→ Zona media Bollinger {bb_pos:.0%}"
 
-    # Stochastic
-    if a['stoch_k'] > 80:
-        detalles['STOCH'] = f"⚠️ Sobrecompra Stoch K={a['stoch_k']:.0f}"
-        up -= 0.5
-    elif a['stoch_k'] < 20:
-        detalles['STOCH'] = f"⚠️ Sobreventa Stoch K={a['stoch_k']:.0f}"
-        down -= 0.5
-    elif a['stoch_k'] > a['stoch_d']:
-        up += w_stoch; detalles['STOCH'] = f"▲ Stoch K>D ({a['stoch_k']:.0f})"
+    # 7. Stochastic
+    stk = safe(a, "stk", 50)
+    std = safe(a, "std_k", 50)
+    if 20 < stk < 80:
+        if stk > std:
+            up += W["stoch"]; det["STOCH"] = f"▲ Stoch K={stk:.0f} > D={std:.0f}"
+        else:
+            down += W["stoch"]; det["STOCH"] = f"▼ Stoch K={stk:.0f} < D={std:.0f}"
+    elif stk >= 80:
+        det["STOCH"] = f"⚠️ Sobrecompra K={stk:.0f}"
     else:
-        down += w_stoch; detalles['STOCH'] = f"▼ Stoch K<D ({a['stoch_k']:.0f})"
+        det["STOCH"] = f"⚠️ Sobreventa K={stk:.0f}"
 
-    # Normalizar a 1-10
-    max_score = w_vwap + w_ema + 0.5 + w_rsi + w_vol + w_macd + w_bb + w_stoch
-    s_up   = max(1, min(10, round((up   / max_score) * 10)))
-    s_down = max(1, min(10, round((down / max_score) * 10)))
+    # 8. BONUS: 3 velas alcistas / bajistas consecutivas (patrón de explosión)
+    c1 = safe(df.iloc[-1], "close", 0); o1 = safe(df.iloc[-1], "Open",  c1)
+    c2 = safe(df.iloc[-2], "close", c1) if len(df) > 1 else c1
+    o2 = safe(df.iloc[-2], "Open",  c2) if len(df) > 1 else c2
+    c3 = safe(df.iloc[-3], "close", c2) if len(df) > 2 else c2
+    o3 = safe(df.iloc[-3], "Open",  c3) if len(df) > 2 else c3
 
-    # Señal principal
-    if s_up >= 7:
-        senal = "COMPRA"
-    elif s_down >= 7:
-        senal = "VENTA"
-    elif s_up >= 5:
-        senal = "ALCISTA"
-    elif s_down >= 5:
-        senal = "BAJISTA"
+    tres_up   = (c1 > o1) and (c2 > o2) and (c3 > o3) and (c1 > c2 > c3)
+    tres_down = (c1 < o1) and (c2 < o2) and (c3 < o3) and (c1 < c2 < c3)
+
+    if tres_up:
+        up   += 1.5; det["VELAS"] = "🔥 3 velas verdes consecutivas — ARRANQUE"
+    elif tres_down:
+        down += 1.5; det["VELAS"] = "🔥 3 velas rojas consecutivas — CAÍDA"
     else:
-        senal = "NEUTRO"
+        det["VELAS"] = "→ Sin patrón de 3 velas"
 
-    return s_up, s_down, senal, detalles
+    max_pts = sum(W.values()) + 1.5
+    s_up   = max(1, min(10, round((up   / max_pts) * 10)))
+    s_down = max(1, min(10, round((down / max_pts) * 10)))
+
+    if   s_up >= 8:   senal = "🚀 EXPLOSIÓN ALCISTA"
+    elif s_up >= 6:   senal = "📈 COMPRA"
+    elif s_down >= 8: senal = "💥 EXPLOSIÓN BAJISTA"
+    elif s_down >= 6: senal = "📉 VENTA"
+    else:             senal = "⚪ NEUTRO"
+
+    return s_up, s_down, senal, det
 
 
-def calcular_sl_tp_dinamico(df: pd.DataFrame, precio: float, senal: str, atr_mult_sl=2.0, atr_mult_tp=4.0):
-    """Stop Loss y Take Profit basados en ATR + soporte/resistencia"""
-    a = df.iloc[-1]
-    atr = a['atr'] if not np.isnan(a['atr']) else precio * 0.01
+# ══════════════════════════════════════════════════════════════
+#  SL / TP DINÁMICO
+# ══════════════════════════════════════════════════════════════
+def sl_tp_din(df, precio, senal, mult_sl=2.0, mult_tp=4.0):
+    try:
+        a   = df.iloc[-1]
+        atr = float(a["atr"]) if not np.isnan(a["atr"]) else precio * 0.01
+        sup = float(a["sup"]) if not np.isnan(a["sup"]) else precio * 0.97
+        res = float(a["res"]) if not np.isnan(a["res"]) else precio * 1.03
+    except Exception:
+        atr = precio * 0.01; sup = precio * 0.97; res = precio * 1.03
 
-    if senal in ("COMPRA", "ALCISTA"):
-        sl = round(max(precio - atr * atr_mult_sl, a['soporte'] * 0.998), 4)
-        tp = round(min(precio + atr * atr_mult_tp, a['resistencia'] * 0.998), 4)
+    alcista = any(x in senal for x in ["COMPRA", "ALCISTA", "EXPLOSIÓN AL"])
+    if alcista:
+        sl = round(max(precio - atr * mult_sl, sup * 0.998), 4)
+        tp = round(min(precio + atr * mult_tp, res * 0.999), 4)
     else:
-        sl = round(min(precio + atr * atr_mult_sl, a['resistencia'] * 1.002), 4)
-        tp = round(max(precio - atr * atr_mult_tp, a['soporte'] * 1.002), 4)
-
+        sl = round(min(precio + atr * mult_sl, res * 1.002), 4)
+        tp = round(max(precio - atr * mult_tp, sup * 1.001), 4)
     rr = round(abs(tp - precio) / max(abs(precio - sl), 1e-6), 2)
     return sl, tp, rr
 
 
-# ─────────────────────────────────────────────
-#  ESCANEO PRINCIPAL
-# ─────────────────────────────────────────────
-def escanear_mercado(tickers, precio_min, precio_max, cambio_min_pct, session,
-                     vol_min=0, top_n=50):
-    """Descarga y analiza todos los tickers. Devuelve DataFrame de resultados."""
-    interval = "1m" if session != "REGULAR" else "2m"
-    period   = "1d"
+# ══════════════════════════════════════════════════════════════
+#  ESCANEO MASIVO
+# ══════════════════════════════════════════════════════════════
+def escanear(tickers, interval, period, prepost, cambio_min, vol_min, mult_sl, mult_tp, session, top_n=40):
+    resultados   = []
+    progress_bar = st.progress(0.0, text="⚡ Iniciando descarga...")
+    total        = len(tickers)
+    lote         = 30
+    dfs          = {}
 
-    resultados = []
-    progress   = st.progress(0, text="Descargando datos...")
-    total      = len(tickers)
-
-    # Descarga en lotes de 50 para no saturar yfinance
-    chunk_size = 50
-    dfs_raw    = {}
-
-    for i in range(0, total, chunk_size):
-        chunk = tickers[i:i+chunk_size]
+    # ── DESCARGA EN LOTES ────────────────────────────────────
+    for i in range(0, total, lote):
+        chunk = tickers[i:i+lote]
+        pct   = min((i + lote) / total * 0.5, 0.5)
+        progress_bar.progress(pct, text=f"📡 Descargando {min(i+lote,total)}/{total}...")
         try:
             raw = yf.download(
                 chunk, period=period, interval=interval,
-                group_by='ticker', prepost=True, progress=False,
-                threads=True, auto_adjust=True
+                group_by="ticker", prepost=prepost,
+                progress=False, auto_adjust=True, threads=True
             )
             for t in chunk:
                 try:
                     if len(chunk) == 1:
-                        dfs_raw[t] = raw.dropna()
+                        dfs[t] = raw.copy()
                     else:
-                        dfs_raw[t] = raw[t].dropna() if t in raw.columns.get_level_values(0) else pd.DataFrame()
+                        lvl0 = raw.columns.get_level_values(0)
+                        if t in lvl0:
+                            dfs[t] = raw[t].copy()
+                        else:
+                            dfs[t] = pd.DataFrame()
                 except Exception:
-                    dfs_raw[t] = pd.DataFrame()
+                    dfs[t] = pd.DataFrame()
         except Exception:
-            pass
-        progress.progress(min((i + chunk_size) / total, 1.0),
-                          text=f"Descargando... {min(i+chunk_size, total)}/{total}")
+            for t in chunk:
+                dfs[t] = pd.DataFrame()
 
-    progress.empty()
-    analisis_bar = st.progress(0, text="Analizando señales...")
-
+    # ── ANÁLISIS ─────────────────────────────────────────────
     for idx, t in enumerate(tickers):
+        pct2 = 0.5 + (idx + 1) / total * 0.5
+        progress_bar.progress(pct2, text=f"🔍 {t} ({idx+1}/{total})")
         try:
-            df = dfs_raw.get(t, pd.DataFrame())
-            if df is None or len(df) < 20:
+            raw_df = dfs.get(t, pd.DataFrame())
+            if raw_df is None or len(raw_df) < 8:
                 continue
 
-            df = calcular_indicadores(df)
-            a  = df.iloc[-1]
-            precio = float(a['Close'])
-
-            if not (precio_min <= precio <= precio_max):
+            df = calcular_indicadores(raw_df)
+            if df is None or len(df) < 5:
                 continue
 
-            # Filtro cambio % mínimo (vs apertura del día)
-            precio_open = float(df['Open'].iloc[0])
-            cambio_pct  = ((precio - precio_open) / precio_open) * 100 if precio_open > 0 else 0
-
-            if abs(cambio_pct) < cambio_min_pct:
+            precio = float(df["close"].iloc[-1])
+            if precio <= 0:
                 continue
 
-            # Filtro volumen mínimo
-            vol_actual = int(a['Volume'])
-            if vol_actual < vol_min:
+            # Cambio % desde apertura del día
+            open_day   = float(df["Open"].iloc[0]) if "Open" in df.columns else precio
+            cambio_dia = ((precio - open_day) / open_day * 100) if open_day > 0 else 0
+
+            # Cambio % en la última vela (primer minuto de movimiento)
+            precio_ant  = float(df["close"].iloc[-2]) if len(df) > 1 else precio
+            cambio_vela = ((precio - precio_ant) / precio_ant * 100) if precio_ant > 0 else 0
+
+            # Filtro volumen
+            vol_a  = float(df["vol"].iloc[-1])
+            if vol_a < vol_min:
                 continue
 
-            s_up, s_down, senal, detalles = calcular_score(df, session)
-            sl, tp, rr = calcular_sl_tp_dinamico(df, precio, senal)
+            # Filtro movimiento: al menos cambio_min en el día O 1/3 en última vela
+            if abs(cambio_dia) < cambio_min and abs(cambio_vela) < max(cambio_min * 0.25, 0.10):
+                continue
 
-            vol_ratio = float(a['Volume'] / a['vol_avg20']) if a['vol_avg20'] > 0 else 1.0
+            s_up, s_down, senal, det = score_explosion(df, session)
+            _sl, _tp, rr = sl_tp_din(df, precio, senal, mult_sl, mult_tp)
+
+            vavg   = float(df["vavg"].iloc[-1]) if not np.isnan(df["vavg"].iloc[-1]) else 1
+            vratio = round(vol_a / max(vavg, 1), 1)
+            rsi    = float(df["rsi"].iloc[-1])  if not np.isnan(df["rsi"].iloc[-1])  else 0
+            sup    = float(df["sup"].iloc[-1])  if not np.isnan(df["sup"].iloc[-1])  else 0
+            res    = float(df["res"].iloc[-1])  if not np.isnan(df["res"].iloc[-1])  else 0
 
             resultados.append({
-                "Ticker"       : t,
-                "Precio $"     : round(precio, 2),
-                "Cambio %"     : round(cambio_pct, 2),
-                "Score 🐂"     : s_up,
-                "Score 🐻"     : s_down,
-                "Señal"        : senal,
-                "RSI"          : round(float(a['rsi']), 1),
-                "MACD"         : round(float(a['macd']), 4),
-                "Vol Ratio"    : round(vol_ratio, 1),
-                "Soporte $"    : round(float(a['soporte']), 2),
-                "Resistencia $": round(float(a['resistencia']), 2),
-                "Stop Loss $"  : sl,
-                "Take Profit $": tp,
-                "R:R"          : rr,
-                "ATR"          : round(float(a['atr']), 4),
-                "_detalles"    : detalles,
-                "_df"          : df,
+                "Ticker"    : t,
+                "Precio $"  : round(precio, 3),
+                "Δ Vela %"  : round(cambio_vela, 2),
+                "Δ Día %"   : round(cambio_dia, 2),
+                "Score 🐂"  : s_up,
+                "Score 🐻"  : s_down,
+                "Señal"     : senal,
+                "RSI"       : round(rsi, 1),
+                "Vol x"     : vratio,
+                "Soporte $" : round(sup, 2),
+                "Resist $"  : round(res, 2),
+                "SL $"      : _sl,
+                "TP $"      : _tp,
+                "R:R"       : rr,
+                "_det"      : det,
+                "_df"       : df,
             })
         except Exception:
             continue
 
-        analisis_bar.progress((idx + 1) / total,
-                              text=f"Analizando {t}... {idx+1}/{total}")
+    progress_bar.empty()
 
-    analisis_bar.empty()
+    if not resultados:
+        return pd.DataFrame()
 
-    df_res = pd.DataFrame(resultados)
-    if df_res.empty:
-        return df_res
-
-    # Ordenar por score alcista desc
-    df_res = df_res.sort_values(by="Score 🐂", ascending=False).head(top_n)
-    return df_res
+    df_res = pd.DataFrame(resultados).sort_values("Score 🐂", ascending=False).reset_index(drop=True)
+    return df_res.head(top_n)
 
 
-# ─────────────────────────────────────────────
-#  FUNCIONES DE ALPACA
-# ─────────────────────────────────────────────
+# ══════════════════════════════════════════════════════════════
+#  ALPACA HELPERS
+# ══════════════════════════════════════════════════════════════
 def get_cuenta():
-    try:
-        return alpaca.get_account()
-    except Exception as e:
-        return None
+    try:    return alpaca.get_account()
+    except: return None
 
 def get_posiciones():
-    try:
-        return alpaca.get_all_positions()
-    except Exception:
-        return []
+    try:    return alpaca.get_all_positions()
+    except: return []
 
 def cerrar_posicion(symbol):
-    try:
-        alpaca.close_position(symbol)
-        return True, f"Posición {symbol} cerrada."
-    except Exception as e:
-        return False, str(e)
+    try:    alpaca.close_position(symbol); return True, f"Posición {symbol} cerrada ✅"
+    except Exception as e: return False, str(e)
 
-def enviar_orden_compra(symbol, qty, sl_price, tp_price):
+def orden_compra(symbol, qty, sl_p, tp_p):
     try:
         req = MarketOrderRequest(
-            symbol=symbol,
-            qty=qty,
-            side=OrderSide.BUY,
-            time_in_force=TimeInForce.GTC,
-            take_profit=TakeProfitRequest(limit_price=round(tp_price, 2)),
-            stop_loss=StopLossRequest(stop_price=round(sl_price, 2))
+            symbol=symbol, qty=qty,
+            side=OrderSide.BUY, time_in_force=TimeInForce.GTC,
+            take_profit=TakeProfitRequest(limit_price=round(float(tp_p), 2)),
+            stop_loss=StopLossRequest(stop_price=round(float(sl_p), 2))
         )
         alpaca.submit_order(req)
-        return True, f"✅ Orden BUY enviada: {symbol} | SL: ${sl_price} | TP: ${tp_price}"
+        return True, f"✅ BUY {qty} {symbol} | SL ${sl_p} | TP ${tp_p}"
     except Exception as e:
-        return False, f"❌ Error: {e}"
+        return False, f"❌ {e}"
 
-def enviar_orden_venta(symbol, qty):
+def orden_venta(symbol, qty):
     try:
-        req = MarketOrderRequest(
-            symbol=symbol,
-            qty=qty,
-            side=OrderSide.SELL,
-            time_in_force=TimeInForce.GTC,
-        )
+        req = MarketOrderRequest(symbol=symbol, qty=qty, side=OrderSide.SELL, time_in_force=TimeInForce.GTC)
         alpaca.submit_order(req)
-        return True, f"✅ Orden SELL enviada: {symbol}"
+        return True, f"✅ SELL {qty} {symbol}"
     except Exception as e:
-        return False, f"❌ Error: {e}"
+        return False, f"❌ {e}"
 
 
-# ════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════
 #  ENCABEZADO PRINCIPAL
-# ════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════
 st.markdown('<h1 class="header-glow">⚡ THUNDER RADAR V90 ULTRA</h1>', unsafe_allow_html=True)
-st.markdown('<p class="subheader-dim">SCALPING · MOMENTUM · AI SIGNALS · ALPACA PAPER TRADING</p>', unsafe_allow_html=True)
+st.markdown('<p class="subheader-dim">DETECCIÓN DE EXPLOSIÓN EN TIEMPO REAL · SCALPING · ALPACA PAPER TRADING</p>', unsafe_allow_html=True)
 
-badge_class = SESSION_BADGES.get(session, "badge-neutral")
-col_s1, col_s2, col_s3 = st.columns([1,1,1])
-with col_s1:
-    st.markdown(f'<span class="{badge_class}">● SESIÓN: {session}</span>', unsafe_allow_html=True)
-with col_s2:
-    tz  = pytz.timezone('US/Eastern')
-    now_et = datetime.now(tz).strftime("%H:%M:%S ET  |  %d/%m/%Y")
-    st.markdown(f'<span style="color:#8b949e">🕐 {now_et}</span>', unsafe_allow_html=True)
-with col_s3:
-    cuenta = get_cuenta()
+badges = {"REGULAR":"badge-regular","PRE-MARKET":"badge-premarket",
+          "AFTER-HOURS":"badge-afterhours","CERRADO":"badge-closed"}
+tz_et   = pytz.timezone("US/Eastern")
+hora_et = datetime.now(tz_et).strftime("%H:%M:%S ET")
+cuenta  = get_cuenta()
+
+hc1, hc2, hc3 = st.columns(3)
+with hc1:
+    st.markdown(
+        f'<span class="session-badge {badges.get(SESSION,"badge-closed")}">● {SESSION}</span>'
+        f' &nbsp; <span class="live-dot"></span><span style="color:#8b949e;font-size:.8em">EN VIVO</span>',
+        unsafe_allow_html=True)
+with hc2:
+    st.markdown(f'<span style="color:#8b949e">🕐 {hora_et}</span>', unsafe_allow_html=True)
+with hc3:
     if cuenta:
         equity = float(cuenta.equity)
-        cash   = float(cuenta.cash)
-        pnl    = float(cuenta.equity) - float(cuenta.last_equity)
-        pnl_color = "#00ff88" if pnl >= 0 else "#ff4444"
-        st.markdown(f'<span style="color:{pnl_color}">💰 Equity: ${equity:,.2f} | P&L: ${pnl:+,.2f}</span>', unsafe_allow_html=True)
+        pnl    = equity - float(cuenta.last_equity)
+        col    = "#00ff88" if pnl >= 0 else "#ff4444"
+        st.markdown(f'<span style="color:{col}">💰 ${equity:,.2f} &nbsp;|&nbsp; P&L {pnl:+,.2f}</span>',
+                    unsafe_allow_html=True)
 
-st.divider()
+st.markdown('<hr class="divider-neon">', unsafe_allow_html=True)
 
-# ════════════════════════════════════════════════════════════
-#  BARRA LATERAL – CONFIGURACIÓN
-# ════════════════════════════════════════════════════════════
+
+# ══════════════════════════════════════════════════════════════
+#  BARRA LATERAL
+# ══════════════════════════════════════════════════════════════
 with st.sidebar:
     st.markdown("### ⚙️ CONFIGURACIÓN")
 
-    modo_escaneo = st.selectbox("Modo de Escaneo", [
+    modo = st.selectbox("Modo de Escaneo", [
         "🔥 Momentum Explosión",
-        "📈 Scalping Rápido",
-        "📉 Señales de Venta",
+        "📈 Top Alcistas",
+        "📉 Top Bajistas",
         "🌅 Pre-Market Sensible",
         "🌆 After-Hours Sensible",
-        "🎯 Tickers Manuales"
+        "🎯 Tickers Manuales",
     ])
 
     st.markdown("---")
-    st.markdown("**Filtros de Precio**")
-    precio_min = st.number_input("Precio Mín $", value=1.0,   step=0.5,  min_value=0.01)
-    precio_max = st.number_input("Precio Máx $", value=500.0, step=10.0, min_value=1.0)
+    intervalo_cfg, periodo_cfg, prepost_cfg, cambio_dflt, vol_dflt = SESSION_CFG.get(
+        SESSION, ("1m","1d",True,0.5,500))
 
-    st.markdown("**Filtro Movimiento Mínimo**")
-    if session == "REGULAR":
-        cambio_min = st.slider("Cambio % mínimo desde apertura", 0.0, 10.0, 1.0, 0.1)
-    else:
-        cambio_min = st.slider("Cambio % mínimo (Pre/After)", 0.0, 5.0, 0.3, 0.1,
-                               help="En Pre/After el umbral es más bajo por menor volumen")
+    if modo in ("🌅 Pre-Market Sensible","🌆 After-Hours Sensible"):
+        cambio_dflt = 0.10
+        vol_dflt    = 150
 
-    vol_min = st.number_input("Volumen mínimo por vela", value=5000, step=1000)
+    precio_min_f = st.number_input("Precio Mín $", value=0.10, step=0.10, min_value=0.01)
+    precio_max_f = st.number_input("Precio Máx $", value=800.0, step=10.0)
 
-    st.markdown("**ATR Multiplicadores (SL / TP)**")
+    label_c = "Δ% mínimo (última vela)" if SESSION != "REGULAR" else "Δ% mínimo desde apertura"
+    cambio_min = st.slider(label_c, 0.0, 10.0, float(cambio_dflt), 0.05,
+                           help="Umbral de movimiento para aparecer en el radar")
+    vol_min    = st.number_input("Volumen mínimo por vela", value=int(vol_dflt), step=50, min_value=0)
+    top_n_f    = st.slider("Top resultados a mostrar", 10, 80, 30, 5)
+
+    st.markdown("---")
     atr_sl = st.slider("ATR × Stop Loss",   0.5, 5.0, 2.0, 0.5)
     atr_tp = st.slider("ATR × Take Profit", 1.0, 8.0, 4.0, 0.5)
 
     st.markdown("---")
-    if modo_escaneo == "🎯 Tickers Manuales":
-        tickers_txt = st.text_area("Tickers (sep. coma)", "AAPL,TSLA,NVDA,GME,COIN", height=100)
-        lista_tickers = [t.strip().upper() for t in tickers_txt.split(",") if t.strip()]
-    elif modo_escaneo == "🌅 Pre-Market Sensible":
-        lista_tickers = UNIVERSO_COMPLETO
-        cambio_min = min(cambio_min, 0.2)
-    elif modo_escaneo == "🌆 After-Hours Sensible":
-        lista_tickers = UNIVERSO_COMPLETO
-        cambio_min = min(cambio_min, 0.2)
+    if modo == "🎯 Tickers Manuales":
+        txt = st.text_area("Tickers (coma)", "AAPL,TSLA,NVDA,GME,COIN,MARA,RIOT,SOFI", height=90)
+        lista_scan = [t.strip().upper() for t in txt.split(",") if t.strip()]
     else:
-        lista_tickers = UNIVERSO_COMPLETO
+        lista_scan = UNIVERSO
 
-    top_n = st.slider("Top resultados a mostrar", 10, 100, 30, 10)
+    st.info(f"📊 Universo: **{len(lista_scan)}** activos")
 
     st.markdown("---")
-    modo_auto = st.toggle("🤖 Modo Automático (Auto-Trade)", value=False)
+    modo_auto = st.toggle("🤖 Auto-Trade", value=False)
     if modo_auto:
-        auto_score_min  = st.slider("Score mínimo para auto-compra", 6, 10, 8)
-        auto_qty        = st.number_input("Cantidad auto-orden", value=1, min_value=1)
-        max_posiciones  = st.number_input("Máx. posiciones simultáneas", value=3, min_value=1)
-        st.warning("⚠️ El auto-trading ejecuta órdenes reales en Paper.")
+        auto_score = st.slider("Score mínimo auto-compra", 7, 10, 8)
+        auto_qty   = st.number_input("Acciones por orden", value=1, min_value=1)
+        max_pos    = st.number_input("Máx posiciones", value=3, min_value=1)
+        st.warning("⚠️ Ejecuta órdenes reales en Paper.")
 
     st.markdown("---")
-    auto_refresh = st.toggle("🔁 Auto-refresh (30 seg)", value=False)
+    auto_refresh = st.toggle("🔁 Auto-escaneo continuo", value=False)
+    refresh_seg  = 45 if SESSION == "REGULAR" else 60
 
-# ════════════════════════════════════════════════════════════
+
+# ══════════════════════════════════════════════════════════════
 #  PORTAFOLIO ACTIVO
-# ════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════
 st.subheader("💼 Portafolio Activo — P&L en Tiempo Real")
-
 posiciones = get_posiciones()
 if posiciones:
-    pos_data = []
+    rows = []
     for p in posiciones:
-        pnl_pct = float(p.unrealized_plpc) * 100
-        pnl_usd = float(p.unrealized_pl)
-        color   = "🟢" if pnl_pct >= 0 else "🔴"
-        pos_data.append({
-            "Ticker"    : p.symbol,
-            "Qty"       : p.qty,
-            "Entrada $" : round(float(p.avg_entry_price), 2),
-            "Actual $"  : round(float(p.current_price), 2),
-            "P&L %"     : f"{color} {pnl_pct:+.2f}%",
-            "P&L $"     : f"${pnl_usd:+.2f}",
-            "Valor $"   : f"${float(p.market_value):,.2f}",
-        })
-    df_pos = pd.DataFrame(pos_data)
-    st.dataframe(df_pos, use_container_width=True, hide_index=True)
-
-    col_x1, col_x2, col_x3 = st.columns([2, 1, 1])
-    with col_x1:
-        t_cerrar = st.selectbox("Ticker para cerrar", [p['Ticker'] for p in pos_data])
-    with col_x2:
-        if st.button("🔴 CERRAR POSICIÓN", use_container_width=True):
-            ok, msg = cerrar_posicion(t_cerrar)
+        pnl_p = float(p.unrealized_plpc) * 100
+        pnl_u = float(p.unrealized_pl)
+        ico   = "🟢" if pnl_p >= 0 else "🔴"
+        rows.append({"Ticker":p.symbol,"Qty":p.qty,
+                     "Entrada $":round(float(p.avg_entry_price),2),
+                     "Actual $": round(float(p.current_price),2),
+                     "P&L %":    f"{ico} {pnl_p:+.2f}%",
+                     "P&L $":    f"${pnl_u:+.2f}",
+                     "Valor $":  f"${float(p.market_value):,.2f}"})
+    st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+    px1, px2, px3 = st.columns([2,1,1])
+    with px1: t_close = st.selectbox("Ticker a cerrar", [r["Ticker"] for r in rows])
+    with px2:
+        if st.button("🔴 Cerrar posición"):
+            ok, msg = cerrar_posicion(t_close)
             st.success(msg) if ok else st.error(msg)
-    with col_x3:
-        if st.button("🔴 CERRAR TODO", use_container_width=True):
-            for p in posiciones:
-                cerrar_posicion(p.symbol)
+    with px3:
+        if st.button("🔴 Cerrar TODO"):
+            [cerrar_posicion(p.symbol) for p in posiciones]
             st.warning("Cerrando todas las posiciones...")
 else:
-    st.info("No hay posiciones abiertas. ¡Busca oportunidades con el escáner! 🎯")
+    st.info("Sin posiciones abiertas. ¡Busca con el radar! 🎯")
 
-st.divider()
+st.markdown('<hr class="divider-neon">', unsafe_allow_html=True)
 
-# ════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════
 #  MOTOR DE ESCANEO
-# ════════════════════════════════════════════════════════════
-st.subheader("🔭 Motor de Escaneo de Mercado")
+# ══════════════════════════════════════════════════════════════
+st.subheader("🔭 Radar de Explosión")
 
-col_btn1, col_btn2 = st.columns([3, 1])
-with col_btn1:
-    iniciar = st.button("🚀 INICIAR ESCANEO COMPLETO", use_container_width=True)
-with col_btn2:
-    if st.button("🔄 Refresh Portafolio", use_container_width=True):
-        st.rerun()
+if "df_scan"   not in st.session_state: st.session_state.df_scan   = pd.DataFrame()
+if "last_scan" not in st.session_state: st.session_state.last_scan = None
 
-if iniciar:
-    st.markdown(f"**Escaneando {len(lista_tickers)} activos en sesión {session}...**")
-    df_res = escanear_mercado(
-        lista_tickers, precio_min, precio_max, cambio_min, session, vol_min, top_n
-    )
+sb1, sb2 = st.columns([3,1])
+with sb1: iniciar = st.button("🚀 INICIAR ESCANEO COMPLETO", use_container_width=True)
+with sb2:
+    if st.button("🔄 Refresh UI", use_container_width=True): st.rerun()
 
-    if df_res.empty:
-        st.warning("⚠️ No se detectaron oportunidades con los filtros actuales. Prueba reduciendo el cambio mínimo o ampliando el rango de precio.")
-    else:
-        # ── Columnas de visualización (sin columnas internas _)
-        cols_vis = [c for c in df_res.columns if not c.startswith("_")]
+# ── Disparar escaneo ─────────────────────────────────────────
+debe_escanear = iniciar or (
+    auto_refresh and
+    st.session_state.last_scan is not None and
+    (time.time() - st.session_state.last_scan) >= refresh_seg
+)
 
-        # Formatear señal con badges HTML
-        def badge_senal(s):
-            if s == "COMPRA":   return "🟢 COMPRA"
-            elif s == "VENTA":  return "🔴 VENTA"
-            elif s == "ALCISTA": return "🔵 ALCISTA"
-            elif s == "BAJISTA": return "🟠 BAJISTA"
-            else:               return "⚪ NEUTRO"
+if debe_escanear:
+    with st.spinner(f"⚡ Escaneando {len(lista_scan)} activos en sesión {SESSION}..."):
+        df_scan = escanear(
+            lista_scan, intervalo_cfg, periodo_cfg, prepost_cfg,
+            cambio_min, vol_min, atr_sl, atr_tp, SESSION, top_n_f
+        )
+    st.session_state.df_scan   = df_scan
+    st.session_state.last_scan = time.time()
 
-        df_show = df_res[cols_vis].copy()
-        df_show["Señal"] = df_show["Señal"].apply(badge_senal)
+df_scan = st.session_state.df_scan
 
-        # Colorear Score
-        def color_score(val):
-            if val >= 8: return "background-color:#15803d; color:white"
-            elif val >= 6: return "background-color:#1d4ed8; color:white"
-            elif val >= 4: return "background-color:#92400e; color:white"
-            else:          return "background-color:#7f1d1d; color:white"
+# ── MOSTRAR RESULTADOS ───────────────────────────────────────
+if not df_scan.empty:
 
-        styled = df_show.style\
-            .applymap(color_score, subset=["Score 🐂", "Score 🐻"])\
-            .format({
-                "Precio $"     : "${:.2f}",
-                "Cambio %"     : "{:+.2f}%",
-                "RSI"          : "{:.1f}",
-                "Vol Ratio"    : "{:.1f}x",
-                "Soporte $"    : "${:.2f}",
-                "Resistencia $": "${:.2f}",
-                "Stop Loss $"  : "${:.2f}",
-                "Take Profit $": "${:.2f}",
-                "R:R"          : "{:.2f}",
-            })
+    boom  = df_scan[df_scan["Score 🐂"] >= 7]
+    otros = df_scan[df_scan["Score 🐂"] <  7]
 
-        st.dataframe(styled, use_container_width=True, hide_index=True, height=450)
+    # ── TARJETAS DE EXPLOSIÓN ────────────────────────────────
+    if not boom.empty:
+        st.markdown(f"### 🔥 EXPLOSIONES DETECTADAS — {len(boom)} señales")
+        for _, row in boom.iterrows():
+            s = int(row["Score 🐂"])
+            cls = "score-10" if s == 10 else ("score-high" if s >= 8 else "score-mid")
+            dc = "#00ff88" if row["Δ Vela %"] >= 0 else "#ff4444"
+            dd = "#00ff88" if row["Δ Día %"]  >= 0 else "#ff4444"
+            st.markdown(f"""
+            <div class="boom-card">
+              <span class="ticker-name">⚡ {row['Ticker']}</span>
+              &nbsp;&nbsp;<span class="{cls}">{s}/10</span>
+              &nbsp;&nbsp;<span style="color:#a78bfa;font-size:.9em">{row['Señal']}</span>
+              <br>
+              <span class="label-dim">Precio</span> <b style="color:#fff">${row['Precio $']}</b>
+              &nbsp;|&nbsp;
+              <span class="label-dim">Δ Vela</span>
+              <b style="color:{dc}">{row['Δ Vela %']:+.2f}%</b>
+              &nbsp;|&nbsp;
+              <span class="label-dim">Δ Día</span>
+              <b style="color:{dd}">{row['Δ Día %']:+.2f}%</b>
+              &nbsp;|&nbsp;
+              <span class="label-dim">RSI</span> {row['RSI']}
+              &nbsp;|&nbsp;
+              <span class="label-dim">Vol</span> {row['Vol x']}x
+              &nbsp;|&nbsp;
+              <span class="label-dim">SL</span> <span style="color:#ff6b6b">${row['SL $']}</span>
+              &nbsp;|&nbsp;
+              <span class="label-dim">TP</span> <span style="color:#00ff88">${row['TP $']}</span>
+              &nbsp;|&nbsp;
+              <span class="label-dim">R:R</span> {row['R:R']}x
+            </div>""", unsafe_allow_html=True)
 
-        # ── MODO AUTOMÁTICO ──────────────────────────────────────
-        if modo_auto:
-            st.subheader("🤖 Auto-Trade — Ejecutando señales ≥ score " + str(auto_score_min))
-            pos_actuales = len(get_posiciones())
-            candidatos   = df_res[df_res["Score 🐂"] >= auto_score_min]
-            for _, row in candidatos.iterrows():
-                if pos_actuales >= max_posiciones:
-                    st.warning(f"Máximo de {max_posiciones} posiciones alcanzado.")
-                    break
-                ok, msg = enviar_orden_compra(row["Ticker"], auto_qty,
-                                              row["Stop Loss $"], row["Take Profit $"])
-                if ok: pos_actuales += 1
-                st.write(msg)
+    # ── TABLA COMPLETA ───────────────────────────────────────
+    st.markdown("### 📋 Tabla completa del radar")
+    cols_vis = ["Ticker","Precio $","Δ Vela %","Δ Día %","Score 🐂","Score 🐻",
+                "Señal","RSI","Vol x","Soporte $","Resist $","SL $","TP $","R:R"]
+    df_show  = df_scan[cols_vis].copy()
 
-        # ── PANEL DE EJECUCIÓN MANUAL ────────────────────────────
-        st.divider()
-        st.subheader("🛒 Ejecución Manual")
+    def col_score(val):
+        if val >= 8:   return "background-color:#15803d;color:white"
+        elif val >= 6: return "background-color:#1d4ed8;color:white"
+        elif val >= 4: return "background-color:#92400e;color:white"
+        else:          return "background-color:#7f1d1d;color:white"
 
-        col_e1, col_e2 = st.columns([1, 2])
-        with col_e1:
-            t_buy = st.selectbox("Ticker a Operar", df_res["Ticker"].tolist())
-            row_sel = df_res[df_res["Ticker"] == t_buy].iloc[0]
+    def col_delta(val):
+        c = "#00ff88" if val >= 0 else "#ff4444"
+        return f"color:{c};font-weight:bold"
 
-            cant_m = st.number_input("Cantidad de Acciones", value=1, min_value=1, step=1)
+    fmt = {"Precio $":"${:.3f}","Δ Vela %":"{:+.2f}%","Δ Día %":"{:+.2f}%",
+           "RSI":"{:.1f}","Vol x":"{:.1f}x","Soporte $":"${:.2f}",
+           "Resist $":"${:.2f}","SL $":"${:.2f}","TP $":"${:.2f}","R:R":"{:.2f}"}
 
-            sl_m = st.number_input("Stop Loss $",   value=float(row_sel["Stop Loss $"]),  step=0.01)
-            tp_m = st.number_input("Take Profit $", value=float(row_sel["Take Profit $"]), step=0.01)
+    # ── COMPATIBILIDAD PANDAS >= 2.1 y < 2.1 ────────────────
+    try:
+        styled = (df_show.style
+                  .map(col_score, subset=["Score 🐂","Score 🐻"])
+                  .map(col_delta, subset=["Δ Vela %","Δ Día %"])
+                  .format(fmt))
+    except Exception:
+        try:
+            styled = (df_show.style
+                      .applymap(col_score, subset=["Score 🐂","Score 🐻"])
+                      .applymap(col_delta, subset=["Δ Vela %","Δ Día %"])
+                      .format(fmt))
+        except Exception:
+            styled = df_show.style.format(fmt)
 
-            col_buy_b, col_sell_b = st.columns(2)
-            with col_buy_b:
-                if st.button("🟢 COMPRAR", use_container_width=True):
-                    ok, msg = enviar_orden_compra(t_buy, cant_m, sl_m, tp_m)
-                    st.success(msg) if ok else st.error(msg)
-            with col_sell_b:
-                if st.button("🔴 VENDER", use_container_width=True):
-                    ok, msg = enviar_orden_venta(t_buy, cant_m)
-                    st.success(msg) if ok else st.error(msg)
+    st.dataframe(styled, use_container_width=True, hide_index=True, height=420)
 
-        with col_e2:
-            st.markdown("### 📊 Análisis Detallado: " + t_buy)
-            m1, m2, m3, m4 = st.columns(4)
-            m1.metric("Precio",     f"${row_sel['Precio $']:.2f}")
-            m2.metric("Cambio %",   f"{row_sel['Cambio %']:+.2f}%")
-            m3.metric("Score 🐂",   f"{row_sel['Score 🐂']}/10")
-            m4.metric("Score 🐻",   f"{row_sel['Score 🐻']}/10")
+    # ── AUTO-TRADE ───────────────────────────────────────────
+    if modo_auto:
+        st.markdown("### 🤖 Auto-Trade en ejecución")
+        n_pos = len(get_posiciones())
+        for _, row in df_scan[df_scan["Score 🐂"] >= auto_score].iterrows():
+            if n_pos >= max_pos:
+                st.warning(f"Máximo de {max_pos} posiciones alcanzado.")
+                break
+            ok, msg = orden_compra(row["Ticker"], auto_qty, row["SL $"], row["TP $"])
+            if ok: n_pos += 1
+            st.write(msg)
 
-            m5, m6, m7, m8 = st.columns(4)
-            m5.metric("RSI",        f"{row_sel['RSI']}")
-            m6.metric("Stop Loss",  f"${row_sel['Stop Loss $']:.2f}")
-            m7.metric("Take Profit",f"${row_sel['Take Profit $']:.2f}")
-            m8.metric("Ratio R:R",  f"{row_sel['R:R']:.2f}x")
+    # ── EJECUCIÓN MANUAL ─────────────────────────────────────
+    st.markdown('<hr class="divider-neon">', unsafe_allow_html=True)
+    st.markdown("### 🛒 Ejecución Manual")
+    ce1, ce2 = st.columns([1,2])
+    with ce1:
+        t_op  = st.selectbox("Ticker a operar", df_scan["Ticker"].tolist())
+        rsel  = df_scan[df_scan["Ticker"] == t_op].iloc[0]
+        qty_m = st.number_input("Cantidad acciones", value=1, min_value=1, step=1)
+        sl_m  = st.number_input("Stop Loss $",   value=float(rsel["SL $"]),  step=0.01)
+        tp_m  = st.number_input("Take Profit $", value=float(rsel["TP $"]),  step=0.01)
+        b1, b2 = st.columns(2)
+        with b1:
+            if st.button("🟢 COMPRAR", use_container_width=True):
+                ok, msg = orden_compra(t_op, qty_m, sl_m, tp_m)
+                st.success(msg) if ok else st.error(msg)
+        with b2:
+            if st.button("🔴 VENDER", use_container_width=True):
+                ok, msg = orden_venta(t_op, qty_m)
+                st.success(msg) if ok else st.error(msg)
 
-            # Detalles de la señal
-            detalles = row_sel.get("_detalles", {})
-            if detalles:
-                st.markdown("**📌 Detalle de la Señal:**")
-                for k, v in detalles.items():
-                    color = "#00ff88" if "▲" in v else ("#ff4444" if "▼" in v else "#ffc107")
-                    st.markdown(f'<span style="color:{color}; font-size:0.85em">**{k}**: {v}</span>', unsafe_allow_html=True)
+    with ce2:
+        st.markdown(f"### 📊 Análisis: {t_op}")
+        m1,m2,m3,m4 = st.columns(4)
+        m1.metric("Precio $",   f"${rsel['Precio $']:.3f}")
+        m2.metric("Δ Vela",     f"{rsel['Δ Vela %']:+.2f}%")
+        m3.metric("Score 🐂",   f"{rsel['Score 🐂']}/10")
+        m4.metric("R:R",        f"{rsel['R:R']}x")
+        m5,m6,m7,m8 = st.columns(4)
+        m5.metric("RSI",        f"{rsel['RSI']}")
+        m6.metric("SL $",       f"${rsel['SL $']:.2f}")
+        m7.metric("TP $",       f"${rsel['TP $']:.2f}")
+        m8.metric("Vol x avg",  f"{rsel['Vol x']}x")
 
-# ════════════════════════════════════════════════════════════
-#  AUTO-REFRESH
-# ════════════════════════════════════════════════════════════
+        det = rsel.get("_det", {})
+        if det:
+            st.markdown("**📌 Detalle de señal:**")
+            for k, v in det.items():
+                c = "#00ff88" if "▲" in v else ("#ff4444" if "▼" in v else "#ffc107")
+                st.markdown(
+                    f'<span style="color:{c};font-size:.82em"><b>{k}</b>: {v}</span>',
+                    unsafe_allow_html=True)
+
+elif st.session_state.last_scan is not None:
+    st.warning("⚠️ Sin señales con los filtros actuales. Reduce el Δ% mínimo o el volumen mínimo.")
+else:
+    st.info("👆 Pulsa **🚀 INICIAR ESCANEO COMPLETO** para comenzar.")
+
+# ══════════════════════════════════════════════════════════════
+#  AUTO-REFRESH LOOP
+# ══════════════════════════════════════════════════════════════
 if auto_refresh:
-    time.sleep(30)
+    time.sleep(refresh_seg)
     st.rerun()
 
-# ════════════════════════════════════════════════════════════
-#  PIE DE PÁGINA
-# ════════════════════════════════════════════════════════════
-st.divider()
+# ══════════════════════════════════════════════════════════════
+#  PIE
+# ══════════════════════════════════════════════════════════════
+st.markdown('<hr class="divider-neon">', unsafe_allow_html=True)
 st.markdown("""
-<div style="text-align:center; color:#8b949e; font-size:0.75em; font-family:'Share Tech Mono', monospace;">
-⚡ THUNDER RADAR V90 ULTRA — PAPER TRADING MODE — Para uso educativo y experimental<br>
+<div style="text-align:center;color:#8b949e;font-size:.72em;font-family:'Share Tech Mono',monospace">
+⚡ THUNDER RADAR V90 ULTRA — PAPER TRADING — Solo para uso educativo y experimental<br>
 Los resultados pasados no garantizan rendimientos futuros. Opera con responsabilidad.
-</div>
-""", unsafe_allow_html=True)
+</div>""", unsafe_allow_html=True)
