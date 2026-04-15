@@ -10,8 +10,8 @@ st.set_page_config(layout="wide")
 st.title("⚡ THUNDER RADAR PRO MAX")
 
 # 🔐 API KEYS (Streamlit secrets)
-API_KEY = st.secrets.get("ALPACA_API_KEY", None)
-SECRET_KEY = st.secrets.get("ALPACA_SECRET_KEY", None)
+API_KEY = st.secrets.get("PKOKUMRZBCA2YJKVZIATSPGV5J", None)
+SECRET_KEY = st.secrets.get("2UBriZpW7NooR1EvtowC63GcarFt7rEQFD9ofti9Ah6N", None)
 
 # Intentar Alpaca
 use_alpaca = False
