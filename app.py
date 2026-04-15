@@ -9,7 +9,7 @@ from datetime import datetime
 import pytz
 
 # --- CONFIGURACIÓN DE PÁGINA ---
-st.set_page_config(page_title="THUNDER RADAR V80 - ULTRA", layout="wide")
+st.set_page_config(page_title="THUNDER RADAR V80 - ULTRA PRO", layout="wide")
 
 # --- ESTILOS PROFESIONALES ---
 st.markdown("""
@@ -34,21 +34,18 @@ alpaca = get_alpaca()
 # --- LÓGICA DE CALIFICACIÓN (1-10) ---
 def obtener_score(df):
     actual = df.iloc[-1]
-    previo = df.iloc[-2]
     
     # Score Alcista
     score_up = 0
     if actual['Close'] > actual['vwap']: score_up += 3
     if actual['ema_9'] > actual['ema_20']: score_up += 3
     if actual['rsi'] > 55: score_up += 2
-    if actual['Volume'] > df['Volume'].rolling(20).mean().iloc[-1]: score_up += 2
     
     # Score Bajista
     score_down = 0
     if actual['Close'] < actual['vwap']: score_down += 3
     if actual['ema_9'] < actual['ema_20']: score_down += 3
     if actual['rsi'] < 45: score_down += 2
-    if actual['Volume'] > df['Volume'].rolling(20).mean().iloc[-1]: score_down += 2
     
     return min(score_up, 10), min(score_down, 10)
 
@@ -68,15 +65,15 @@ session = get_market_session()
 # --- BARRA LATERAL ---
 st.sidebar.header(f"🏛️ ESTADO: {session}")
 modo_radar = st.sidebar.selectbox("Filtro de Radar", ["Explosión Momentum", "Gap Up Scalping", "Personalizado"])
-precio_min = st.sidebar.number_input("Precio Mín $", value=0.5, step=0.1)
+precio_min = st.sidebar.number_input("Precio Mín $", value=0.1, step=0.1)
 precio_max = st.sidebar.number_input("Precio Máx $", value=150.0, step=1.0)
+vol_filtro = st.sidebar.number_input("Filtro Vol. Base", value=5000, help="Acciones rápidas ignorarán este filtro")
 
-if st.sidebar.toggle("Usar Mis Tickers"):
-    # CAMBIO A TEXT_INPUT: Permite dar "Enter" rápidamente sin necesidad de Ctrl+Enter
-    lista_tickers = st.sidebar.text_input("Lista (sep. por coma)", "AAPL,TSLA,NVDA,GME,AMC,MARA,RIOT").split(",")
+if st.sidebar.toggle("Usar Mis Tickers", value=True):
+    # text_input para respuesta inmediata al presionar Enter
+    lista_tickers = st.sidebar.text_input("Lista (sep. por coma)", "AGAE, JZXN, KUST, TSLA, NVDA").split(",")
 else:
-    # Lista enfocada en volatilidad para Momentum
-    lista_tickers = ["TSLA", "NVDA", "AMD", "GME", "AMC", "MARA", "RIOT", "COIN", "PLTR", "SOFI", "MSTR", "UPST", "AFRM", "HOOD", "BABA", "NIO"]
+    lista_tickers = ["TSLA", "NVDA", "AMD", "GME", "AMC", "MARA", "RIOT", "COIN", "PLTR", "SOFI", "MSTR"]
 
 # --- INTERFAZ PRINCIPAL ---
 col_t1, col_t2 = st.columns([3, 1])
@@ -115,28 +112,45 @@ try:
     else:
         st.info("No tienes posiciones abiertas actualmente.")
 except Exception as e:
-    st.error(f"Error al cargar posiciones: {e}")
+    st.error(f"Error al cargar posiciones. Verifica tus claves: {e}")
 
 st.divider()
 
 # --- 2. RADAR DE MERCADO ---
-if st.button("🚀 INICIAR ESCANEO DE MOMENTUM"):
-    with st.spinner(f"Escaneando {session}..."):
+if st.button("🚀 INICIAR ESCANEO DE MOMENTUM", use_container_width=True):
+    with st.spinner(f"Escaneando con alta sensibilidad en {session}..."):
         # Descarga con prepost=True para ver Pre y After hours
-        data_all = yf.download(lista_tickers, period="2d", interval="5m", group_by='ticker', prepost=True, progress=False)
+        data_all = yf.download([t.strip().upper() for t in lista_tickers], period="2d", interval="1m", group_by='ticker', prepost=True, progress=False)
         resultados = []
 
         for t in lista_tickers:
+            t = t.strip().upper()
             try:
-                t = t.strip().upper()
+                # Blindaje: Si la acción no existe o no tiene datos, la saltamos sin error
+                if t not in data_all or data_all[t].empty: continue
                 df = data_all[t].dropna()
                 if len(df) < 20: continue
                 
-                # Cálculos Técnicos
+                actual = df.iloc[-1]
+                precio = round(actual['Close'], 2)
+                
+                if not (precio_min <= precio <= precio_max): continue
+
+                # MEJORA: Cálculo de Velocidad en 5 Minutos
+                precio_hace_5m = df['Close'].iloc[-5]
+                cambio_5m = ((precio - precio_hace_5m) / precio_hace_5m) * 100
+                es_despegue = cambio_5m >= 1.5 # Si sube más de 1.5% en 5 mins, es explosión
+                
+                vol_actual = actual['Volume']
+                
+                # BYPASS DE VOLUMEN: Si es despegue, ignoramos el filtro de volumen
+                if no es_despegue and vol_actual < vol_filtro: continue
+
+                # Cálculos Técnicos (Mantenidos y protegidos)
                 df['ema_9'] = df['Close'].ewm(span=9).mean()
                 df['ema_20'] = df['Close'].ewm(span=20).mean()
                 tp = (df['High'] + df['Low'] + df['Close']) / 3
-                df['vwap'] = (tp * df['Volume']).cumsum() / df['Volume'].cumsum()
+                df['vwap'] = (tp * df['Volume']).cumsum() / (df['Volume'].cumsum() + 1)
                 
                 # RSI
                 delta = df['Close'].diff()
@@ -147,30 +161,17 @@ if st.button("🚀 INICIAR ESCANEO DE MOMENTUM"):
                 # ATR para SL/TP Dinámico
                 df['atr'] = (df['High'] - df['Low']).rolling(14).mean()
                 
-                actual = df.iloc[-1]
-                precio = round(actual['Close'], 2)
-                
-                if not (precio_min <= precio <= precio_max): continue
-
                 # Lógica de Explosión (Momentum)
-                gap_pct = ((actual['Close'] - df['Open'].iloc[-1]) / df['Open'].iloc[-1]) * 100
+                gap_pct = ((precio - df['Open'].iloc[-1]) / df['Open'].iloc[-1]) * 100
                 s_alcista, s_bajista = obtener_score(df)
                 
-                # Estado RSI (Agregado)
-                if actual['rsi'] >= 70:
-                    estado_rsi = "🔥 SOBRECOMPRA"
-                elif actual['rsi'] <= 30:
-                    estado_rsi = "🧊 SOBREVENTA"
-                else:
-                    estado_rsi = "⚖️ NEUTRAL"
-
-                # Volumen Score de 1 a 10 (Agregado)
+                # Puntuación de Volumen Dinámica
                 vol_promedio = df['Volume'].rolling(20).mean().iloc[-1]
-                if vol_promedio > 0:
-                    ratio_vol = actual['Volume'] / vol_promedio
-                    v_score = min(int(ratio_vol * 4), 10)  # Multiplicador agresivo para detectar explosiones
-                else:
-                    v_score = 0
+                v_score = 10 if es_despegue else min(int((vol_actual / (vol_promedio + 1)) * 4), 10)
+
+                # Estado RSI
+                rsi_val = actual['rsi']
+                estado_rsi = "🔥 SOBRECOMPRA" if rsi_val >= 70 else "🧊 SOBREVENTA" if rsi_val <= 30 else "⚖️ NEUTRAL"
                 
                 # Protección Dinámica (SL y TP sugeridos)
                 volatilidad = actual['atr']
@@ -179,23 +180,26 @@ if st.button("🚀 INICIAR ESCANEO DE MOMENTUM"):
 
                 resultados.append({
                     "Ticker": t,
-                    "Precio": precio,
+                    "Precio": f"${precio}",
+                    "Velocidad 5m ⚡": f"{round(cambio_5m, 2)}%",
                     "Score 🐂": s_alcista,
                     "Score 🐻": s_bajista,
                     "Gap %": round(gap_pct, 2),
                     "Estado RSI": estado_rsi,
-                    "RSI": round(actual['rsi'], 1),
-                    "ATR Volatilidad": f"${round(actual['atr'], 3)}",
+                    "RSI": round(rsi_val, 1),
+                    "ATR Volatilidad": round(volatilidad, 3),
                     "Stop Loss": sl_sugerido,
                     "Take Profit": tp_sugerido,
-                    "Volumen Score": f"{v_score}/10",
-                    "Volumen Total": int(actual['Volume'])
+                    "Vol. Score": f"{v_score}/10",
+                    "Volumen Real": int(vol_actual)
                 })
-            except: continue
+            except Exception as e:
+                # Si falla una acción específica, pasamos a la siguiente sin colapsar el programa
+                continue
 
         if resultados:
-            # Ordenamos por el Score Alcista para que las mejores oportunidades salgan arriba
-            df_res = pd.DataFrame(resultados).sort_values(by="Score 🐂", ascending=False)
+            # Ordenamos primero por velocidad de despegue y luego por score alcista
+            df_res = pd.DataFrame(resultados).sort_values(by=["Velocidad 5m ⚡", "Score 🐂"], ascending=[False, False])
             st.subheader("🎯 Oportunidades de Explosión Detectadas")
             st.dataframe(df_res, use_container_width=True)
 
@@ -208,7 +212,6 @@ if st.button("🚀 INICIAR ESCANEO DE MOMENTUM"):
                 row = df_res[df_res['Ticker'] == t_buy].iloc[0]
                 cant = st.number_input("Cantidad de Acciones", value=1, min_value=1)
                 
-                # Botón de Compra con Protección Automática
                 if st.button("🟢 EJECUTAR COMPRA PROTEGIDA", use_container_width=True):
                     try:
                         req = MarketOrderRequest(
@@ -216,8 +219,8 @@ if st.button("🚀 INICIAR ESCANEO DE MOMENTUM"):
                             qty=cant, 
                             side=OrderSide.BUY, 
                             time_in_force=TimeInForce.GTC,
-                            take_profit=TakeProfitRequest(limit_price=row['Take Profit']),
-                            stop_loss=StopLossRequest(stop_price=row['Stop Loss'])
+                            take_profit=TakeProfitRequest(limit_price=float(row['Take Profit'])),
+                            stop_loss=StopLossRequest(stop_price=float(row['Stop Loss']))
                         )
                         alpaca.submit_order(req)
                         st.success(f"Orden Enviada: {t_buy} | SL: {row['Stop Loss']} | TP: {row['Take Profit']}")
@@ -225,6 +228,6 @@ if st.button("🚀 INICIAR ESCANEO DE MOMENTUM"):
                         st.error(f"Error de ejecución: {e}")
             
             with col_buy2:
-                st.info(f"💡 **Análisis de {t_buy}**: Score de {row['Score 🐂']}/10. El sistema ha calculado un Stop Loss a ${row['Stop Loss']} basado en la volatilidad actual del mercado.")
+                st.info(f"💡 **Análisis de {t_buy}**: Score de {row['Score 🐂']}/10 con una velocidad de subida de {row['Velocidad 5m ⚡']} en los últimos 5 minutos. El Stop Loss automático se ha fijado en ${row['Stop Loss']}.")
         else:
             st.warning("No se detecta momentum claro en este momento. Esperando explosión...")
