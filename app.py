@@ -13,8 +13,8 @@ from alpaca.trading.enums import OrderSide, TimeInForce
 st.set_page_config(layout="wide")
 st.title("⚡ THUNDER RADAR PRO - AUTO TRADING REAL")
 
-API_KEY = st.secrets["PKOKUMRZBCA2YJKVZIATSPGV5J"]
-SECRET = st.secrets["2UBriZpW7NooR1EvtowC63GcarFt7rEQFD9ofti9Ah6N"]
+API_KEY = ["PKOKUMRZBCA2YJKVZIATSPGV5J"]
+SECRET = ["2UBriZpW7NooR1EvtowC63GcarFt7rEQFD9ofti9Ah6N"]
 
 alpaca = TradingClient(API_KEY, SECRET, paper=True)
 
