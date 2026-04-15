@@ -2,39 +2,51 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import yfinance as yf
-import plotly.graph_objects as go
+import requests
+import time
+
+from alpaca.trading.client import TradingClient
+from alpaca.trading.requests import MarketOrderRequest
+from alpaca.trading.enums import OrderSide, TimeInForce
 
 # ================= CONFIG =================
 st.set_page_config(layout="wide")
-st.title("⚡ THUNDER RADAR PRO FINAL")
+st.title("⚡ THUNDER RADAR PRO - AUTO TRADING REAL")
+
+API_KEY = st.secrets["PKOKUMRZBCA2YJKVZIATSPGV5J"]
+SECRET = st.secrets["2UBriZpW7NooR1EvtowC63GcarFt7rEQFD9ofti9Ah6N"]
+
+alpaca = TradingClient(API_KEY, SECRET, paper=True)
 
 # ================= SIDEBAR =================
-auto = st.sidebar.toggle("🤖 Auto Trading (solo visual)", False)
+st.sidebar.title("⚙️ CONFIG")
 
-tickers = st.sidebar.text_input(
-    "Tickers",
-    "TSLA,NVDA,AMD,AAPL"
-).split(",")
+auto = st.sidebar.toggle("🤖 Auto Trading", False)
+qty = st.sidebar.number_input("Cantidad por trade", 1, 1000, 1)
 
-tickers = [t.strip().upper() for t in tickers]
+min_score = st.sidebar.slider("Sensibilidad", 1, 10, 6)
+precio_min = st.sidebar.number_input("Precio mínimo", 0.1)
+precio_max = st.sidebar.number_input("Precio máximo", 500.0)
 
-# ================= DATA =================
-def get_data(symbol):
-    try:
-        df = yf.download(symbol, period="1d", interval="1m", progress=False)
+refresh = st.sidebar.checkbox("📡 Auto refresh (5s)")
 
-        if isinstance(df.columns, pd.MultiIndex):
-            df.columns = df.columns.get_level_values(0)
+# ================= ALERTA SONIDO =================
+def alerta():
+    st.markdown("""
+    <audio autoplay>
+    <source src="https://www.soundjay.com/buttons/sounds/beep-07.mp3">
+    </audio>
+    """, unsafe_allow_html=True)
 
-        return df[['Open','High','Low','Close','Volume']].dropna()
-
-    except:
-        return pd.DataFrame()
+# ================= TOP GAINERS =================
+@st.cache_data(ttl=60)
+def get_gainers():
+    url = "https://query1.finance.yahoo.com/v1/finance/screener/predefined/saved?scrIds=day_gainers&count=100"
+    data = requests.get(url).json()
+    return [q['symbol'] for q in data['finance']['result'][0]['quotes']]
 
 # ================= INDICADORES =================
-def indicadores(df):
-    df = df.copy()
-
+def analizar(df):
     df['ema9'] = df['Close'].ewm(span=9).mean()
     df['ema20'] = df['Close'].ewm(span=20).mean()
 
@@ -43,70 +55,112 @@ def indicadores(df):
 
     df['momentum'] = df['Close'].pct_change(3)*100
 
-    df = df.replace([np.inf,-np.inf],np.nan).dropna()
+    df = df.replace([np.inf, -np.inf], np.nan).dropna()
 
-    return df
+    if len(df) < 10:
+        return None
 
-# ================= IA SIMPLE =================
-def score_ia(df):
     last = df.iloc[-1]
+
     score = 0
-
-    if last['Close'] > last['ema9']: score += 2
-    if last['ema9'] > last['ema20']: score += 2
+    if last['ema9'] > last['ema20']: score += 3
     if last['vol_ratio'] > 1.5: score += 3
-    if last['momentum'] > 1: score += 3
+    if last['momentum'] > 1: score += 2
+    if last['momentum'] > 2: score += 2
 
-    return score
+    return score, last
+
+# ================= TRAILING =================
+positions = {}
+
+def buy(symbol, price):
+    order = MarketOrderRequest(
+        symbol=symbol,
+        qty=qty,
+        side=OrderSide.BUY,
+        time_in_force=TimeInForce.DAY
+    )
+    alpaca.submit_order(order)
+
+    positions[symbol] = {
+        "entry": price,
+        "trail": price * 0.98
+    }
+
+def sell(symbol):
+    order = MarketOrderRequest(
+        symbol=symbol,
+        qty=qty,
+        side=OrderSide.SELL,
+        time_in_force=TimeInForce.DAY
+    )
+    alpaca.submit_order(order)
+
+    positions.pop(symbol, None)
+
+# ================= AUTO REFRESH =================
+if refresh:
+    time.sleep(5)
+    st.rerun()
 
 # ================= MAIN =================
+if st.button("🚀 INICIAR RADAR") or refresh:
 
-if st.button("🚀 ESCANEAR"):
-
+    tickers = get_gainers()
     resultados = []
 
     for t in tickers:
-        df = get_data(t)
+        try:
+            df = yf.download(t, period="1d", interval="5m", progress=False)
 
-        if df.empty or len(df) < 30:
+            if df.empty:
+                continue
+
+            resultado = analizar(df)
+            if resultado is None:
+                continue
+
+            score, last = resultado
+            precio = float(last['Close'])
+
+            if not (precio_min <= precio <= precio_max):
+                continue
+
+            if score < min_score:
+                continue
+
+            tipo = "🚀 FUERTE" if score >= 7 else "🟢 TEMPRANO"
+
+            resultados.append({
+                "Ticker": t,
+                "Tipo": tipo,
+                "Precio": round(precio,2),
+                "Score": score
+            })
+
+            # 🔔 ALERTA
+            if score >= 7:
+                alerta()
+                st.success(f"🚀 DESPEGUE: {t}")
+
+                if auto and t not in positions:
+                    buy(t, precio)
+
+            # 🔄 TRAILING
+            if t in positions:
+                trail = max(positions[t]["trail"], precio * 0.99)
+                positions[t]["trail"] = trail
+
+                if precio < trail:
+                    st.warning(f"🔴 SALIDA: {t}")
+                    if auto:
+                        sell(t)
+
+        except:
             continue
-
-        df = indicadores(df)
-
-        if df.empty:
-            continue
-
-        last = df.iloc[-1]
-        precio = float(last['Close'])
-
-        score = score_ia(df)
-
-        resultados.append({
-            "Ticker": t,
-            "Precio": round(precio,2),
-            "Score IA (1-10)": score,
-            "Vol Ratio": round(last['vol_ratio'],2),
-            "Momentum %": round(last['momentum'],2)
-        })
-
-        # ================= GRAFICO =================
-        fig = go.Figure(data=[go.Candlestick(
-            x=df.index,
-            open=df['Open'],
-            high=df['High'],
-            low=df['Low'],
-            close=df['Close']
-        )])
-
-        st.subheader(f"{t}")
-        st.plotly_chart(fig, use_container_width=True)
-
-        # ================= ALERTA =================
-        if score >= 7:
-            st.success(f"🚀 POSIBLE DESPEGUE: {t}")
 
     if resultados:
-        df_res = pd.DataFrame(resultados).sort_values(by="Score IA (1-10)", ascending=False)
+        df_res = pd.DataFrame(resultados).sort_values(by="Score", ascending=False)
         st.dataframe(df_res, use_container_width=True)
     else:
-        st.warning("No hay datos suficientes")
+        st.warning("No hay oportunidades ahora")
