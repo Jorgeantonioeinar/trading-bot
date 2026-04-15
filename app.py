@@ -1,142 +1,154 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-from alpaca.data.historical import StockHistoricalDataClient
-from alpaca.data.requests import StockBarsRequest
-from alpaca.data.timeframe import TimeFrame
-from alpaca.trading.client import TradingClient
-from alpaca.trading.requests import MarketOrderRequest
-from alpaca.trading.enums import OrderSide, TimeInForce
-
-# ================== CONFIG ==================
-API_KEY = "PKOKUMRZBCA2YJKVZIATSPGV5J"
-SECRET_KEY = "2UBriZpW7NooR1EvtowC63GcarFt7rEQFD9ofti9Ah6N"
-
-data_client = StockHistoricalDataClient(API_KEY, SECRET_KEY)
-trading_client = TradingClient(API_KEY, SECRET_KEY, paper=True)
+import yfinance as yf
 
 st.set_page_config(layout="wide")
-st.title("⚡ THUNDER RADAR PRO - REAL TIME")
+st.title("⚡ THUNDER RADAR PRO - DETECTOR DE DESPEGUE")
 
-# ================== SIDEBAR ==================
-modo_auto = st.sidebar.toggle("🤖 Auto Trading", False)
+# ===================== SIDEBAR =====================
+st.sidebar.title("⚙️ CONFIGURACIÓN")
 
-tickers_input = st.sidebar.text_input(
-    "Tickers",
-    "TSLA,NVDA,AMD,AAPL,PLTR,SOFI"
+perfil = st.sidebar.selectbox(
+    "Sensibilidad",
+    ["Conservador", "Equilibrado", "Agresivo"]
 )
 
-tickers = [t.strip().upper() for t in tickers_input.split(",")]
+precio_min = st.sidebar.number_input("Precio mínimo", value=0.1)
+precio_max = st.sidebar.number_input("Precio máximo", value=200.0)
 
-# ================== FUNCIONES ==================
+vol_min = st.sidebar.number_input("Volumen mínimo", value=10000)
+vol_max = st.sidebar.number_input("Volumen máximo", value=1000000000)
+
+modo_manual = st.sidebar.toggle("Usar mis tickers")
+
+if modo_manual:
+    tickers_input = st.sidebar.text_input(
+        "Tickers",
+        "TSLA,NVDA,AMD,AAPL,PLTR,SOFI"
+    )
+    tickers = [t.strip().upper() for t in tickers_input.split(",")]
+else:
+    tickers = [
+        "TSLA","NVDA","AMD","AAPL","PLTR","SOFI",
+        "RIOT","MARA","COIN","LCID","RIVN","GME","AMC"
+    ]
+
+# ===================== SENSIBILIDAD =====================
+map_sens = {
+    "Conservador": 7,
+    "Equilibrado": 5,
+    "Agresivo": 3
+}
+sensibilidad = map_sens[perfil]
+
+# ===================== FUNCIONES =====================
 
 def get_data(symbol):
-    req = StockBarsRequest(
-        symbol_or_symbols=symbol,
-        timeframe=TimeFrame.Minute,
-        limit=50
-    )
-    bars = data_client.get_stock_bars(req).df
-    return bars[bars['symbol'] == symbol]
-
+    try:
+        df = yf.download(symbol, period="1d", interval="5m", progress=False)
+        return df
+    except:
+        return pd.DataFrame()
 
 def indicadores(df):
-    df['ema9'] = df['close'].ewm(span=9).mean()
-    df['ema20'] = df['close'].ewm(span=20).mean()
+    df['ema9'] = df['Close'].ewm(span=9).mean()
+    df['ema20'] = df['Close'].ewm(span=20).mean()
 
-    delta = df['close'].diff()
+    delta = df['Close'].diff()
     gain = delta.clip(lower=0).rolling(14).mean()
     loss = -delta.clip(upper=0).rolling(14).mean()
     rs = gain / loss
     df['rsi'] = 100 - (100 / (1 + rs))
 
-    df['vol_avg'] = df['volume'].rolling(20).mean()
-    df['vol_ratio'] = df['volume'] / df['vol_avg']
+    df['vol_avg'] = df['Volume'].rolling(20).mean()
+    df['vol_ratio'] = df['Volume'] / df['vol_avg']
+
+    df['momentum'] = df['Close'].pct_change(3) * 100
 
     return df
 
-
-# ================== CALIFICACIONES ==================
-
-def score_compra(df):
+# 🔥 DETECTOR DE DESPEGUE (CLAVE)
+def detectar_despegue(df):
     last = df.iloc[-1]
-    s = 0
 
-    if last['ema9'] > last['ema20']: s += 3
-    if last['close'] > last['ema9']: s += 2
-    if last['vol_ratio'] > 1.5: s += 3
-    if last['rsi'] < 70: s += 2
+    condiciones = [
+        last['momentum'] > 1.5,        # movimiento fuerte
+        last['vol_ratio'] > 2,         # volumen explotando
+        last['Close'] > last['ema9'],  # tendencia
+    ]
 
-    return min(s, 10)
+    return sum(condiciones)
 
-
-def score_venta(df):
+def score_total(df):
     last = df.iloc[-1]
-    s = 0
+    score = 0
 
-    if last['ema9'] < last['ema20']: s += 3
-    if last['rsi'] > 65: s += 3
-    if last['vol_ratio'] > 1.5: s += 2
+    if last['ema9'] > last['ema20']: score += 2
+    if last['rsi'] > 50: score += 2
+    if last['vol_ratio'] > 2: score += 3
+    if last['momentum'] > 2: score += 3
 
-    return min(s, 10)
-
-
-def score_volumen(df):
-    v = df.iloc[-1]['vol_ratio']
-    return min(int(v * 3), 10)
-
+    return min(score, 10)
 
 def estado_rsi(rsi):
-    if rsi < 30: return "🟢 BAJO"
-    elif rsi < 70: return "🟡 MEDIO"
-    else: return "🔴 ALTO"
+    if rsi < 30: return "🟢 Bajo"
+    elif rsi < 70: return "🟡 Medio"
+    else: return "🔴 Alto"
 
+# ===================== UI =====================
 
-# ================== EJECUCIÓN ==================
-
-if st.button("🚀 ESCANEAR TIEMPO REAL"):
+if st.button("🚀 ESCANEAR MERCADO"):
     resultados = []
 
     for t in tickers:
-        try:
-            df = get_data(t)
+        df = get_data(t)
 
-            if df.empty:
-                continue
+        if df.empty or len(df) < 20:
+            continue
 
-            df = indicadores(df)
-            last = df.iloc[-1]
+        df = indicadores(df)
+        last = df.iloc[-1]
 
-            compra = score_compra(df)
-            venta = score_venta(df)
-            volumen = score_volumen(df)
+        precio = float(last['Close'])
 
-            resultados.append({
-                "Ticker": t,
-                "Precio": round(float(last['close']),2),
-                "Compra (1-10)": compra,
-                "Venta (1-10)": venta,
-                "Volumen (1-10)": volumen,
-                "RSI": round(float(last['rsi']),1),
-                "Estado RSI": estado_rsi(last['rsi'])
-            })
+        if not (precio_min <= precio <= precio_max):
+            continue
 
-            # ================= AUTO TRADING =================
-            if modo_auto:
-                if compra >= 8 and volumen >= 6:
-                    order = MarketOrderRequest(
-                        symbol=t,
-                        qty=1,
-                        side=OrderSide.BUY,
-                        time_in_force=TimeInForce.DAY
-                    )
-                    trading_client.submit_order(order)
+        if not (vol_min <= last['Volume'] <= vol_max):
+            continue
 
-        except Exception as e:
-            st.warning(f"{t}: {e}")
+        despegue = detectar_despegue(df)
+        score = score_total(df)
+
+        if score < sensibilidad:
+            continue
+
+        resultados.append({
+            "Ticker": t,
+            "Precio": round(precio,2),
+            "🔥 Despegue": despegue,
+            "Score (1-10)": score,
+            "RSI": round(float(last['rsi']),1),
+            "Estado RSI": estado_rsi(last['rsi']),
+            "Volumen": int(last['Volume']),
+            "Vol Ratio": round(float(last['vol_ratio']),2),
+            "Momentum %": round(float(last['momentum']),2)
+        })
 
     if resultados:
-        df_res = pd.DataFrame(resultados).sort_values(by="Compra (1-10)", ascending=False)
+        df_res = pd.DataFrame(resultados).sort_values(
+            by=["🔥 Despegue","Score (1-10)"],
+            ascending=False
+        )
+
+        st.success("🚀 Oportunidades detectadas")
         st.dataframe(df_res, use_container_width=True)
+
+        # 🔥 ALERTA CLARA
+        top = df_res.iloc[0]
+        if top["🔥 Despegue"] >= 2:
+            st.warning(f"🔥 POSIBLE DESPEGUE: {top['Ticker']}")
+
     else:
-        st.error("No hay datos")
+        st.error("❌ No hay oportunidades con estos filtros")
