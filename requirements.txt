@@ -2,6 +2,6 @@ streamlit
 pandas
 numpy
 yfinance
+requests
 alpaca-py
 plotly
-scikit-learn
