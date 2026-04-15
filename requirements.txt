@@ -3,4 +3,5 @@ pandas
 numpy
 yfinance
 alpaca-py
-pytz
+plotly
+scikit-learn
