@@ -70,7 +70,6 @@ precio_max = st.sidebar.number_input("Precio Máx $", value=150.0, step=1.0)
 vol_filtro = st.sidebar.number_input("Filtro Vol. Base", value=5000, help="Acciones rápidas ignorarán este filtro")
 
 if st.sidebar.toggle("Usar Mis Tickers", value=True):
-    # text_input para respuesta inmediata al presionar Enter
     lista_tickers = st.sidebar.text_input("Lista (sep. por coma)", "AGAE, JZXN, KUST, TSLA, NVDA").split(",")
 else:
     lista_tickers = ["TSLA", "NVDA", "AMD", "GME", "AMC", "MARA", "RIOT", "COIN", "PLTR", "SOFI", "MSTR"]
@@ -126,42 +125,43 @@ if st.button("🚀 INICIAR ESCANEO DE MOMENTUM", use_container_width=True):
         for t in lista_tickers:
             t = t.strip().upper()
             try:
-                # Blindaje: Si la acción no existe o no tiene datos, la saltamos sin error
                 if t not in data_all or data_all[t].empty: continue
-                df = data_all[t].dropna()
+                df = data_all[t].dropna().copy()
                 if len(df) < 20: continue
+                
+                # --- CÁLCULOS TÉCNICOS ---
+                df['ema_9'] = df['Close'].ewm(span=9).mean()
+                df['ema_20'] = df['Close'].ewm(span=20).mean()
+                
+                # Cálculo de VWAP
+                tp = (df['High'] + df['Low'] + df['Close']) / 3
+                df['vwap'] = (tp * df['Volume']).cumsum() / (df['Volume'].cumsum() + 1)
+                
+                # Cálculo de RSI
+                delta = df['Close'].diff()
+                gain = (delta.where(delta > 0, 0)).rolling(14).mean()
+                loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
+                df['rsi'] = 100 - (100 / (1 + (gain / (loss + 1e-9))))
+                
+                # ATR para SL/TP Dinámico
+                df['atr'] = (df['High'] - df['Low']).rolling(14).mean()
                 
                 actual = df.iloc[-1]
                 precio = round(actual['Close'], 2)
                 
                 if not (precio_min <= precio <= precio_max): continue
 
-                # MEJORA: Cálculo de Velocidad en 5 Minutos
+                # MEJORA: Cálculo de Velocidad en 5 Minutos (Detección de Despegue)
                 precio_hace_5m = df['Close'].iloc[-5]
                 cambio_5m = ((precio - precio_hace_5m) / precio_hace_5m) * 100
-                es_despegue = cambio_5m >= 1.5 # Si sube más de 1.5% en 5 mins, es explosión
+                es_despegue = cambio_5m >= 1.5 
                 
                 vol_actual = actual['Volume']
                 
-                # BYPASS DE VOLUMEN: Si es despegue, ignoramos el filtro de volumen
-                if no es_despegue and vol_actual < vol_filtro: continue
+                # --- CORRECCIÓN CLAVE AQUÍ: 'not' en vez de 'no' ---
+                if not es_despegue and vol_actual < vol_filtro: continue
 
-                # Cálculos Técnicos (Mantenidos y protegidos)
-                df['ema_9'] = df['Close'].ewm(span=9).mean()
-                df['ema_20'] = df['Close'].ewm(span=20).mean()
-                tp = (df['High'] + df['Low'] + df['Close']) / 3
-                df['vwap'] = (tp * df['Volume']).cumsum() / (df['Volume'].cumsum() + 1)
-                
-                # RSI
-                delta = df['Close'].diff()
-                gain = (delta.where(delta > 0, 0)).rolling(14).mean()
-                loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
-                df['rsi'] = 100 - (100 / (1 + (gain / loss)))
-                
-                # ATR para SL/TP Dinámico
-                df['atr'] = (df['High'] - df['Low']).rolling(14).mean()
-                
-                # Lógica de Explosión (Momentum)
+                # Lógica de Datos Adicionales
                 gap_pct = ((precio - df['Open'].iloc[-1]) / df['Open'].iloc[-1]) * 100
                 s_alcista, s_bajista = obtener_score(df)
                 
@@ -173,7 +173,7 @@ if st.button("🚀 INICIAR ESCANEO DE MOMENTUM", use_container_width=True):
                 rsi_val = actual['rsi']
                 estado_rsi = "🔥 SOBRECOMPRA" if rsi_val >= 70 else "🧊 SOBREVENTA" if rsi_val <= 30 else "⚖️ NEUTRAL"
                 
-                # Protección Dinámica (SL y TP sugeridos)
+                # Protección Dinámica
                 volatilidad = actual['atr']
                 sl_sugerido = round(precio - (volatilidad * 2), 2)
                 tp_sugerido = round(precio + (volatilidad * 4), 2)
@@ -194,16 +194,13 @@ if st.button("🚀 INICIAR ESCANEO DE MOMENTUM", use_container_width=True):
                     "Volumen Real": int(vol_actual)
                 })
             except Exception as e:
-                # Si falla una acción específica, pasamos a la siguiente sin colapsar el programa
                 continue
 
         if resultados:
-            # Ordenamos primero por velocidad de despegue y luego por score alcista
             df_res = pd.DataFrame(resultados).sort_values(by=["Velocidad 5m ⚡", "Score 🐂"], ascending=[False, False])
             st.subheader("🎯 Oportunidades de Explosión Detectadas")
             st.dataframe(df_res, use_container_width=True)
 
-            # --- 3. PANEL DE EJECUCIÓN ---
             st.divider()
             col_buy1, col_buy2 = st.columns([1, 2])
             with col_buy1:
@@ -228,6 +225,6 @@ if st.button("🚀 INICIAR ESCANEO DE MOMENTUM", use_container_width=True):
                         st.error(f"Error de ejecución: {e}")
             
             with col_buy2:
-                st.info(f"💡 **Análisis de {t_buy}**: Score de {row['Score 🐂']}/10 con una velocidad de subida de {row['Velocidad 5m ⚡']} en los últimos 5 minutos. El Stop Loss automático se ha fijado en ${row['Stop Loss']}.")
+                st.info(f"💡 **Análisis de {t_buy}**: Score de {row['Score 🐂']}/10 con velocidad de {row['Velocidad 5m ⚡']}. Stop Loss en ${row['Stop Loss']}.")
         else:
-            st.warning("No se detecta momentum claro en este momento. Esperando explosión...")
+            st.warning("No se detecta momentum claro. Prueba bajando el 'Filtro Vol. Base' en la barra lateral.")
