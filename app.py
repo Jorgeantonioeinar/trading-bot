@@ -1,102 +1,207 @@
 """
-THUNDER RADAR V97 — UNIVERSO COMPLETO
-======================================
-FUENTES COMBINADAS (todas gratuitas):
-  1. Twelve Data  → universo completo NYSE+NASDAQ+AMEX (5,000+ acciones)
-  2. Yahoo Finance → top gainers del día en tiempo real
-  3. Detector 5min → momentum de los últimos 5 minutos (como Webull)
-  4. yfinance 1min → indicadores técnicos para señal de despegue
-  5. Alpaca Paper  → ejecución de órdenes con SL/TP dinámico
-
-FLUJO:
-  Paso 1: Carga universo completo via Twelve Data
-  Paso 2: Yahoo Finance trae top gainers del día
-  Paso 3: Pre-filtro rápido 5min sobre TODO el universo
-  Paso 4: Motor de señal 1min sobre los candidatos
-  Resultado: Despegues detectados con Score 1-10
+╔══════════════════════════════════════════════════════════════════════╗
+║       THUNDER RADAR V99 — WEBSOCKET REAL-TIME DEFINITIVO            ║
+║                                                                      ║
+║  ARQUITECTURA:                                                       ║
+║  ┌─────────────────────────────────────────────────────────────┐    ║
+║  │  HILO WEBSOCKET (background)    │  STREAMLIT UI (main)      │    ║
+║  │  ─────────────────────────────  │  ───────────────────────  │    ║
+║  │  StockDataStream (Alpaca)        │  Lee st.session_state    │    ║
+║  │  → on_bar() cada vela 1min      │  Muestra alertas         │    ║
+║  │  → on_trade() tick-by-tick      │  Sliders dinámicos       │    ║
+║  │  → deque rolling 5min           │  Force Meter 1-100       │    ║
+║  │  → Detecta spikes inmediatos    │  Auto-refresh 10 seg     │    ║
+║  │  → Escribe en shared_state      │  Ejecuta órdenes Alpaca  │    ║
+║  └─────────────────────────────────────────────────────────────┘    ║
+║                                                                      ║
+║  FUENTES:                                                            ║
+║  • Alpaca WebSocket (IEX free) → tick-by-tick en tiempo real        ║
+║  • Yahoo Finance Screener       → top gainers del día               ║
+║  • Twelve Data                  → universo NYSE/NASDAQ/AMEX         ║
+║  • Alpaca REST                  → ejecución de órdenes              ║
+╚══════════════════════════════════════════════════════════════════════╝
 """
 
+# ─────────────────────────────────────────────────────────────────────
+#  IMPORTS
+# ─────────────────────────────────────────────────────────────────────
 import streamlit as st
 import pandas as pd
 import numpy as np
-import yfinance as yf
 import requests
-from alpaca.trading.client import TradingClient
-from alpaca.trading.requests import MarketOrderRequest, TakeProfitRequest, StopLossRequest
-from alpaca.trading.enums import OrderSide, TimeInForce
-from datetime import datetime
-import pytz
+import threading
+import asyncio
 import time
+import json
 import warnings
+from datetime import datetime, timedelta
+from collections import deque
+from zoneinfo import ZoneInfo
 warnings.filterwarnings("ignore")
 
-# ══════════════════════════════════════════════════════════════
-st.set_page_config(page_title="⚡ THUNDER RADAR V97", layout="wide",
-                   initial_sidebar_state="expanded")
+# Alpaca Trading
+from alpaca.trading.client import TradingClient
+from alpaca.trading.requests import (LimitOrderRequest, MarketOrderRequest,
+                                      TakeProfitRequest, StopLossRequest)
+from alpaca.trading.enums import OrderSide, TimeInForce
+
+# Alpaca Data (REST + WebSocket)
+from alpaca.data.historical import StockHistoricalDataClient
+from alpaca.data.requests  import StockBarsRequest, StockLatestQuoteRequest
+from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
+from alpaca.data.live      import StockDataStream
+
+# ─────────────────────────────────────────────────────────────────────
+#  CONFIGURACIÓN DE PÁGINA
+# ─────────────────────────────────────────────────────────────────────
+st.set_page_config(
+    page_title="⚡ THUNDER RADAR V99 — WEBSOCKET",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
 
 st.markdown("""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700;900&family=Share+Tech+Mono&display=swap');
-html,body,[class*="css"]{background:#030810!important;color:#c9d1d9!important;
+html,body,[class*="css"]{background:#020709!important;color:#c9d1d9!important;
     font-family:'Share Tech Mono',monospace;}
 h1,h2,h3{font-family:'Orbitron',sans-serif!important;}
 .stButton>button{width:100%;border-radius:4px;font-weight:bold;
     font-family:'Orbitron',sans-serif;letter-spacing:1px;
     border:1px solid #30363d;transition:all .2s;}
-.stButton>button:hover{transform:translateY(-1px);box-shadow:0 0 16px #00ff8866;}
-div[data-testid="metric-container"]{
-    background:linear-gradient(135deg,#0a0f1a,#141b27);
-    border:1px solid #1e2739;border-radius:8px;padding:12px;}
-.card-fire{background:linear-gradient(135deg,#061510,#0a0f1a);
-    border:2px solid #00ff88;border-radius:10px;padding:13px 17px;margin:5px 0;
-    box-shadow:0 0 20px #00ff8855;}
-.card-5min{background:linear-gradient(135deg,#100806,#0a0f1a);
+.stButton>button:hover{transform:translateY(-1px);box-shadow:0 0 16px #ff450066;}
+div[data-testid="metric-container"]{background:linear-gradient(135deg,#080d14,#0d1520);
+    border:1px solid #1a2535;border-radius:8px;padding:12px;}
+
+/* ALERTA ROJA — WebSocket Spike */
+.alerta-roja{background:linear-gradient(135deg,#1a0400,#0d0205);
+    border:2px solid #ff0000;border-radius:10px;padding:14px 18px;margin:5px 0;
+    animation:alarm .8s infinite;}
+@keyframes alarm{
+    0%,100%{box-shadow:0 0 10px #ff000044,inset 0 0 10px #ff000011;}
+    50%    {box-shadow:0 0 35px #ff000099,inset 0 0 20px #ff000033;}}
+
+/* TARJETAS */
+.card-spike{background:linear-gradient(135deg,#1a0800,#0a0f1a);
     border:2px solid #ff4500;border-radius:10px;padding:13px 17px;margin:5px 0;
-    box-shadow:0 0 18px #ff450044;}
-.card-hot{background:linear-gradient(135deg,#100a06,#0a0f1a);
-    border:2px solid #ff8c00;border-radius:10px;padding:11px 15px;margin:4px 0;}
-.card-watch{background:#090b0f;border:1px solid #ffc10733;
+    box-shadow:0 0 20px #ff450055;}
+.card-launch{background:linear-gradient(135deg,#061510,#080d14);
+    border:2px solid #00ff88;border-radius:10px;padding:13px 17px;margin:5px 0;
+    box-shadow:0 0 16px #00ff8844;}
+.card-watch{background:#07090d;border:1px solid #ffc10733;
     border-radius:8px;padding:9px 13px;margin:3px 0;}
+
+/* FORCE METER */
+.force-bg{background:#1a1a2e;border-radius:20px;height:24px;
+    width:100%;position:relative;overflow:hidden;border:1px solid #333;}
+.force-fill{height:100%;border-radius:20px;display:flex;
+    align-items:center;justify-content:center;
+    font-weight:900;font-size:.82em;color:#000;font-family:'Orbitron',sans-serif;}
+
+/* WEBSOCKET STATUS */
+.ws-live{color:#00ff88;font-weight:bold;animation:blink2 1s infinite;}
+.ws-off {color:#ff4444;font-weight:bold;}
+.ws-conn{color:#ffc107;font-weight:bold;}
+@keyframes blink2{0%,100%{opacity:1}50%{opacity:.3}}
+
+/* SCORES */
 .s10{color:#00ff88;font-size:1.9em;font-weight:900;font-family:'Orbitron',sans-serif;}
-.s8{color:#39ff14;font-size:1.5em;font-weight:800;}
-.s6{color:#ffc107;font-size:1.3em;font-weight:700;}
+.s8 {color:#39ff14;font-size:1.5em;font-weight:800;}
+.s6 {color:#ffc107;font-size:1.3em;font-weight:700;}
 .tkr{font-family:'Orbitron',sans-serif;font-size:1.25em;font-weight:900;color:#fff;}
 .lbl{color:#8b949e;font-size:.73em;}
 .hdr{text-align:center;font-family:'Orbitron',sans-serif;font-size:2.1em;font-weight:900;
-    background:linear-gradient(90deg,#00ff88,#00d4ff,#ff4500);
+    background:linear-gradient(90deg,#ff0000,#ff4500,#ffc107,#00ff88,#00d4ff);
     -webkit-background-clip:text;-webkit-text-fill-color:transparent;letter-spacing:3px;}
-.sub{text-align:center;color:#8b949e;font-size:.76em;letter-spacing:3px;}
+.sub{text-align:center;color:#8b949e;font-size:.75em;letter-spacing:3px;}
 .badge{display:inline-block;padding:3px 10px;border-radius:20px;font-size:.73em;font-weight:bold;}
 .b-reg{background:#15803d;color:#fff;}.b-pre{background:#7c3aed;color:#fff;}
 .b-aft{background:#0369a1;color:#fff;}.b-cls{background:#374151;color:#fff;}
-.dot{display:inline-block;width:9px;height:9px;background:#00ff88;border-radius:50%;
-    margin-right:5px;animation:blink 1s infinite;}
+.dot{display:inline-block;width:9px;height:9px;background:#ff4500;border-radius:50%;
+    margin-right:5px;animation:blink .7s infinite;}
 @keyframes blink{0%,100%{opacity:1}50%{opacity:.1}}
-hr.n{border:none;border-top:1px solid #00ff8822;margin:12px 0;}
-.ibox{background:#0a0f1a;border:1px solid #00ff8833;border-radius:8px;
+hr.n{border:none;border-top:1px solid #ff450022;margin:12px 0;}
+.ibox{background:#080d14;border:1px solid #1a2535;border-radius:8px;
     padding:10px 14px;margin:6px 0;font-size:.79em;line-height:1.6em;}
-.step-box{background:#0a0f1a;border:1px solid #1e2739;border-radius:8px;
-    padding:12px 16px;margin:4px 0;}
+.ibox-ok{background:#080d14;border:1px solid #00ff8833;border-radius:8px;
+    padding:10px 14px;margin:6px 0;font-size:.79em;}
+.despegue-badge{display:inline-block;background:#ff4500;color:#fff;
+    padding:2px 8px;border-radius:4px;font-size:.70em;font-weight:bold;margin:1px;}
+.ticker-row{padding:6px 10px;margin:2px 0;border-radius:6px;
+    background:#0a0c10;border:1px solid #1e2739;}
 </style>
+
+<!-- AUDIO ALERT — suena cuando hay spike -->
+<audio id="spike-audio" preload="auto">
+  <source src="data:audio/wav;base64,UklGRnoGAABXQVZFZm10IBAAAA..." type="audio/wav">
+</audio>
+<script>
+function playSpike() {
+  // Beep sintético usando AudioContext (funciona sin archivo externo)
+  try {
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.connect(gain); gain.connect(ctx.destination);
+    osc.frequency.setValueAtTime(880, ctx.currentTime);
+    osc.frequency.setValueAtTime(1100, ctx.currentTime + 0.1);
+    osc.frequency.setValueAtTime(880, ctx.currentTime + 0.2);
+    gain.gain.setValueAtTime(0.3, ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.5);
+    osc.start(ctx.currentTime); osc.stop(ctx.currentTime + 0.5);
+  } catch(e) {}
+}
+// Chequea cada 2 segundos si hay nueva alerta
+setInterval(function() {
+  const el = document.getElementById('spike-trigger');
+  if (el && el.dataset.trigger === '1') {
+    playSpike();
+    el.dataset.trigger = '0';
+  }
+}, 2000);
+</script>
+<div id="spike-trigger" data-trigger="0" style="display:none"></div>
 """, unsafe_allow_html=True)
 
-# ══════════════════════════════════════════════════════════════
-#  ALPACA
-# ══════════════════════════════════════════════════════════════
-ALPACA_KEY    = "PKOKUMRZBCA2YJKVZIATSPGV5J"
-ALPACA_SECRET = "2UBriZpW7NooR1EvtowC63GcarFt7rEQFD9ofti9Ah6N"
+ET = ZoneInfo("America/New_York")
+
+# ─────────────────────────────────────────────────────────────────────
+#  API KEYS (st.secrets con fallback)
+# ─────────────────────────────────────────────────────────────────────
+def get_keys():
+    try:
+        ak = st.secrets["alpaca"]["key"]
+        as_ = st.secrets["alpaca"]["secret"]
+    except Exception:
+        ak  = "PKOKUMRZBCA2YJKVZIATSPGV5J"
+        as_ = "2UBriZpW7NooR1EvtowC63GcarFt7rEQFD9ofti9Ah6N"
+    try:
+        td = st.secrets["twelve"]["key"]
+    except Exception:
+        td = ""
+    return ak, as_, td
+
+ALPACA_KEY, ALPACA_SECRET, TWELVE_KEY = get_keys()
+
+# ─────────────────────────────────────────────────────────────────────
+#  CLIENTES ALPACA
+# ─────────────────────────────────────────────────────────────────────
+@st.cache_resource
+def get_trading():
+    return TradingClient(ALPACA_KEY, ALPACA_SECRET, paper=True)
 
 @st.cache_resource
-def get_alpaca():
-    return TradingClient(ALPACA_KEY, ALPACA_SECRET, paper=True)
-alpaca = get_alpaca()
+def get_data_client():
+    return StockHistoricalDataClient(ALPACA_KEY, ALPACA_SECRET)
 
-# ══════════════════════════════════════════════════════════════
-#  SESIÓN
-# ══════════════════════════════════════════════════════════════
+trading = get_trading()
+data_cl = get_data_client()
+
+# ─────────────────────────────────────────────────────────────────────
+#  SESIÓN DE MERCADO
+# ─────────────────────────────────────────────────────────────────────
 def get_session():
-    tz = pytz.timezone("US/Eastern")
-    h  = datetime.now(tz).hour + datetime.now(tz).minute / 60.0
+    h = datetime.now(ET).hour + datetime.now(ET).minute / 60.0
     if   4.0  <= h < 9.5:  return "PRE-MARKET"
     elif 9.5  <= h < 16.0: return "REGULAR"
     elif 16.0 <= h < 20.0: return "AFTER-HOURS"
@@ -104,1165 +209,1154 @@ def get_session():
 
 SESSION = get_session()
 
-# ══════════════════════════════════════════════════════════════
-#  LISTA RESPALDO (si Twelve Data y Yahoo fallan)
-# ══════════════════════════════════════════════════════════════
-RESPALDO = list(dict.fromkeys([
-    "SDOT","BLZE","CLRB","STRL","BIYA","EVER","JLHL","NXTS","MRDN","UK",
-    "NA","SLOT","NEXR","ATER","BBBY","SBLX","SKK","CNSP","PN","CRE",
-    "ELPW","GBTG","SSM","HCAI","RLYB","MNDR","GME","AMC","KOSS","BB",
-    "NOK","BBIG","SPCE","MULN","MVIS","PROG","NAKD","EXPR","KPLT","CELH",
-    "OCGN","CLOV","SNDL","TLRY","AGEN","MNMD","ATAI","NVAX","MRNA","BNTX",
-    "SRPT","ACAD","HIMS","CRSP","EDIT","COIN","HOOD","MSTR","RIOT","MARA",
-    "HUT","CIFR","BTBT","CLSK","WULF","IREN","RIVN","LCID","CHPT","BLNK",
-    "PLUG","FCEL","GOEV","NIO","XPEV","LI","BABA","JD","PDD","TCOM",
-    "TIGR","FUTU","BILI","ASTS","LUNR","RKLB","ACHR","JOBY","IONQ","RGTI",
-    "SOFI","UPST","AFRM","ROOT","AAPL","MSFT","NVDA","TSLA","AMD","META",
-    "AMZN","GOOGL","AVGO","QCOM","MU","SMCI","PLTR","CRM","SNOW","DDOG",
-    "CRWD","PTON","DOCU","ZM","LYFT","UBER","DASH","ABNB","DKNG","RBLX",
-    "SNAP","PINS","PARA","WBD","ROKU","FUBO","SIRI","WKHS","NKLA","FSR",
-    "BRIA","EDTK","TGHL","ZSPC","PBM","WSHP","MYSE","ONFO","CTNT","RAIN",
-    "CPHI","NCRA","LVLU","RCAT","CRKN","BSLK","GPUS","GFAI","INPX","RSSS",
-    "ISPC","UCAR","ABLV","YXT","ZBAI","MTEX","MGRT","SLQT","VOYG","IMOS",
-]))
+# ─────────────────────────────────────────────────────────────────────
+#  ESTADO COMPARTIDO (thread-safe)
+#  Comunicación entre hilo WebSocket y Streamlit UI
+# ─────────────────────────────────────────────────────────────────────
+# shared_state es un dict global en memoria, accedido por ambos hilos.
+# El hilo WebSocket escribe → Streamlit UI lee
+# _lock evita condiciones de carrera
 
-# ══════════════════════════════════════════════════════════════
-#  FUENTE 1: TWELVE DATA — UNIVERSO COMPLETO
-# ══════════════════════════════════════════════════════════════
-@st.cache_data(ttl=3600)
-def cargar_universo_twelve() -> list:
+_lock = threading.Lock()
+shared_state = {
+    # Precios tick-by-tick: {ticker: float}
+    "prices": {},
+    # Volumen acumulado de la vela actual: {ticker: float}
+    "vol_current": {},
+    # Rolling window 5min: {ticker: deque(maxlen=300)} con (timestamp, price, volume)
+    "rolling": {},
+    # Precios al inicio de la vela de 1min actual: {ticker: float}
+    "open_1min": {},
+    # Velas históricas almacenadas: {ticker: list de dicts}
+    "bars": {},
+    # ALERTAS activas: list de dicts
+    "alertas": [],
+    # Estado del WebSocket
+    "ws_status": "DESCONECTADO",
+    "ws_tickers": [],
+    "ws_trades": 0,       # contador de trades recibidos
+    "ws_last_tick": None, # último timestamp
+    # Nueva alerta (para trigger de audio)
+    "nueva_alerta": False,
+    # Config dinámica (leída del sidebar, escrita por Streamlit)
+    "cfg": {
+        "min_spike_pct": 2.0,
+        "min_rvol": 2.5,
+        "min_force": 60,
+        "precio_min": 0.01,
+        "precio_max": 600.0,
+    }
+}
+
+# ─────────────────────────────────────────────────────────────────────
+#  HILO WEBSOCKET — ALPACA StockDataStream
+#  Corre en background, nunca bloquea Streamlit
+# ─────────────────────────────────────────────────────────────────────
+
+def calcular_rvol(ticker: str) -> float:
     """
-    Descarga lista completa de acciones NYSE+NASDAQ+AMEX via Twelve Data.
-    Gratis, sin API key. Retorna lista de símbolos (solo Common Stock).
+    Calcula RVOL usando la rolling window de 5min.
+    Compara volumen de la vela actual vs promedio de velas anteriores.
     """
-    tickers = []
-    for exc in ["NYSE", "NASDAQ", "AMEX"]:
-        try:
-            r = requests.get(
-                "https://api.twelvedata.com/stocks",
-                params={"exchange": exc, "type": "Common Stock", "format": "JSON"},
-                timeout=15
+    with _lock:
+        rolls = shared_state["rolling"].get(ticker)
+        vol_curr = shared_state["vol_current"].get(ticker, 0)
+
+    if not rolls or len(rolls) < 10:
+        return 1.0
+
+    # Agrupar por minuto y calcular volumen por vela
+    now_ts  = datetime.now(ET)
+    min_now = now_ts.replace(second=0, microsecond=0)
+
+    vols_prev = []
+    vol_min   = {}
+    for ts, price, vol in rolls:
+        m = ts.replace(second=0, microsecond=0)
+        if m < min_now:
+            vol_min[m] = vol_min.get(m, 0) + vol
+
+    if not vol_min:
+        return 1.0
+
+    avg_vol = sum(vol_min.values()) / len(vol_min)
+    return vol_curr / max(avg_vol, 1)
+
+
+def calcular_vel_1m_5m(ticker: str) -> tuple:
+    """
+    Calcula velocidad en los últimos 1min y 5min usando rolling window.
+    Retorna (vel_1m_pct, vel_5m_pct).
+    CRÍTICO: Esta es la métrica principal para detectar PHOE y similares.
+    """
+    with _lock:
+        precio_actual = shared_state["prices"].get(ticker, 0)
+        rolls = list(shared_state["rolling"].get(ticker, deque()))
+
+    if not rolls or precio_actual <= 0:
+        return 0.0, 0.0
+
+    now = datetime.now(ET)
+
+    # Precio hace 1 minuto
+    precio_1m_ago = None
+    for ts, price, vol in reversed(rolls):
+        if (now - ts).total_seconds() >= 60:
+            precio_1m_ago = price
+            break
+
+    # Precio hace 5 minutos
+    precio_5m_ago = None
+    for ts, price, vol in reversed(rolls):
+        if (now - ts).total_seconds() >= 300:
+            precio_5m_ago = price
+            break
+
+    vel_1m = (precio_actual - precio_1m_ago) / max(precio_1m_ago, 1e-9) * 100 \
+             if precio_1m_ago else 0.0
+    vel_5m = (precio_actual - precio_5m_ago) / max(precio_5m_ago, 1e-9) * 100 \
+             if precio_5m_ago else 0.0
+
+    return vel_1m, vel_5m
+
+
+def calcular_ticks_por_segundo(ticker: str, ventana_seg: int = 10) -> float:
+    """
+    Calcula la densidad de transacciones por segundo (tape speed).
+    Un pico masivo de ticks/seg = señal de aceleración anormal.
+    """
+    with _lock:
+        rolls = list(shared_state["rolling"].get(ticker, deque()))
+    if not rolls:
+        return 0.0
+    now = datetime.now(ET)
+    recientes = [1 for ts, _, _ in rolls if (now-ts).total_seconds() <= ventana_seg]
+    return len(recientes) / ventana_seg
+
+
+def evaluar_despegue(ticker: str) -> dict:
+    """
+    Motor de evaluación de despegue inmediato.
+    Lee config dinámica de shared_state["cfg"] para respetar sliders.
+    Retorna dict con force (0-100), spike info y señales.
+    """
+    cfg          = shared_state["cfg"]
+    min_spike    = cfg["min_spike_pct"]
+    min_rvol     = cfg["min_rvol"]
+    precio_min   = cfg["precio_min"]
+    precio_max   = cfg["precio_max"]
+
+    with _lock:
+        precio    = shared_state["prices"].get(ticker, 0)
+        open_1m   = shared_state["open_1min"].get(ticker, precio)
+        bars      = shared_state["bars"].get(ticker, [])
+
+    if precio <= 0 or not (precio_min <= precio <= precio_max):
+        return {"force": 0, "despegue": False}
+
+    # Spike actual vs apertura de vela de 1min
+    spike_1m_actual = (precio - open_1m) / max(open_1m, 1e-9) * 100 if open_1m > 0 else 0
+
+    # Velocidad rolling window
+    vel_1m, vel_5m = calcular_vel_1m_5m(ticker)
+
+    # RVOL
+    rvol = calcular_rvol(ticker)
+
+    # Tape speed
+    tps = calcular_ticks_por_segundo(ticker, 10)
+
+    force = 0
+    det   = {}
+
+    # ── FACTOR 1: SPIKE ACTUAL (peso 35%) ────────────────────
+    # Esta es la métrica CRÍTICA — detecta PHOE en el segundo exacto
+    if spike_1m_actual >= 10:
+        force += 35; det["🚨 Spike 1m"] = f"+{spike_1m_actual:.2f}% — COHETE AHORA"
+    elif spike_1m_actual >= 5:
+        force += 28; det["🚨 Spike 1m"] = f"+{spike_1m_actual:.2f}% — FUERTE"
+    elif spike_1m_actual >= min_spike:
+        force += 20; det["🚨 Spike 1m"] = f"+{spike_1m_actual:.2f}% — DESPEGUE ✅"
+    elif spike_1m_actual >= min_spike * 0.5:
+        force += 8;  det["🚨 Spike 1m"] = f"+{spike_1m_actual:.2f}% — Leve"
+    else:
+        det["🚨 Spike 1m"] = f"{spike_1m_actual:+.2f}% — Sin spike"
+
+    # ── FACTOR 2: VELOCIDAD 1min rolling (peso 25%) ──────────
+    # ACELERACIÓN ANORMAL: >2% en los últimos 60 segundos
+    if vel_1m >= 5:
+        force += 25; det["⚡ Vel 1min"] = f"+{vel_1m:.2f}% (último 1min) — EXPLOSIÓN"
+    elif vel_1m >= 2:
+        force += 18; det["⚡ Vel 1min"] = f"+{vel_1m:.2f}% (último 1min) ✅"
+    elif vel_1m >= 0.5:
+        force += 8;  det["⚡ Vel 1min"] = f"+{vel_1m:.2f}% (último 1min)"
+    elif vel_1m < 0:
+        force -= 5;  det["⚡ Vel 1min"] = f"{vel_1m:.2f}% — Bajando"
+    else:
+        det["⚡ Vel 1min"] = f"{vel_1m:+.2f}% — Plano"
+
+    # ── FACTOR 3: VELOCIDAD 5min rolling (peso 15%) ──────────
+    if vel_5m >= 5:
+        force += 15; det["📈 Vel 5min"] = f"+{vel_5m:.2f}% (último 5min) — MOMENTUM"
+    elif vel_5m >= 2:
+        force += 10; det["📈 Vel 5min"] = f"+{vel_5m:.2f}% (último 5min)"
+    elif vel_5m >= 0.5:
+        force += 4;  det["📈 Vel 5min"] = f"+{vel_5m:.2f}%"
+    else:
+        det["📈 Vel 5min"] = f"{vel_5m:+.2f}%"
+
+    # ── FACTOR 4: RVOL — EXPLOSIÓN DE VOLUMEN (peso 20%) ─────
+    if rvol >= 5:
+        force += 20; det["💥 RVOL"] = f"{rvol:.1f}x — EXPLOSIÓN ✅"
+    elif rvol >= min_rvol:
+        force += 14; det["💥 RVOL"] = f"{rvol:.1f}x — Alto ✅"
+    elif rvol >= 1.5:
+        force += 5;  det["💥 RVOL"] = f"{rvol:.1f}x — Sobre promedio"
+    else:
+        det["💥 RVOL"] = f"{rvol:.1f}x — Normal"
+
+    # ── FACTOR 5: TAPE SPEED (transacciones/seg) ─────────────
+    if tps >= 3:
+        force += 5; det["🎯 Tape"] = f"{tps:.1f} ticks/seg — MASIVO"
+    elif tps >= 1:
+        force += 2; det["🎯 Tape"] = f"{tps:.1f} ticks/seg — Alto"
+    else:
+        det["🎯 Tape"] = f"{tps:.1f} ticks/seg"
+
+    # Calcular con barras históricas si disponibles
+    if bars and len(bars) >= 5:
+        closes = [b["close"] for b in bars[-5:]]
+        vols   = [b["volume"] for b in bars[-5:]]
+        # RSI simplificado
+        diffs  = [closes[i]-closes[i-1] for i in range(1,len(closes))]
+        gains  = [d for d in diffs if d>0]
+        losses = [-d for d in diffs if d<0]
+        rsi    = 50
+        if gains or losses:
+            avg_g = sum(gains)/max(len(gains),1)
+            avg_l = sum(losses)/max(len(losses),1)
+            rsi   = 100 - 100/(1 + avg_g/max(avg_l,1e-9)) if avg_l > 0 else 70
+        if 55 < rsi < 80: force += 3; det["RSI"] = f"{rsi:.0f} ▲"
+        elif rsi >= 80:   force -= 3; det["RSI"] = f"{rsi:.0f} ⚠️ SB"
+        elif rsi < 40:    force -= 3; det["RSI"] = f"{rsi:.0f} ▼"
+        else:              det["RSI"] = f"{rsi:.0f} →"
+
+    force = max(0, min(100, force))
+
+    # DESPEGUE INMINENTE si Force alto + spike + rvol
+    despegue = (force >= 60 and
+                spike_1m_actual >= min_spike * 0.8 and
+                rvol >= min_rvol * 0.7)
+
+    return {
+        "force"     : force,
+        "despegue"  : despegue,
+        "spike_1m"  : spike_1m_actual,
+        "vel_1m"    : vel_1m,
+        "vel_5m"    : vel_5m,
+        "rvol"      : rvol,
+        "tps"       : tps,
+        "precio"    : precio,
+        "detalles"  : det,
+    }
+
+
+# ── CALLBACKS DEL WEBSOCKET ──────────────────────────────────────────
+
+async def on_bar(bar):
+    """
+    Recibe cada vela de 1min desde Alpaca WebSocket.
+    Almacena la vela y actualiza el precio de apertura de la nueva vela.
+    """
+    sym   = bar.symbol
+    close = float(bar.close)
+    vol   = float(bar.volume)
+    ts    = bar.timestamp
+
+    with _lock:
+        # Guardar barra histórica (últimas 50 velas)
+        if sym not in shared_state["bars"]:
+            shared_state["bars"][sym] = []
+        shared_state["bars"][sym].append({
+            "ts": ts, "open": float(bar.open), "high": float(bar.high),
+            "low": float(bar.low), "close": close, "volume": vol
+        })
+        if len(shared_state["bars"][sym]) > 50:
+            shared_state["bars"][sym].pop(0)
+
+        # Resetear vol_current y open_1min al inicio de nueva vela
+        shared_state["open_1min"][sym]   = float(bar.open)
+        shared_state["vol_current"][sym] = 0
+        shared_state["ws_trades"]       += 1
+        shared_state["ws_last_tick"]     = datetime.now(ET)
+
+
+async def on_trade(trade):
+    """
+    Recibe cada transacción (tick) en tiempo real desde Alpaca WebSocket.
+    CRÍTICO: Aquí es donde se detecta el despegue en el segundo exacto.
+    Actualiza rolling window y evalúa si hay despegue inmediato.
+    """
+    sym    = trade.symbol
+    precio = float(trade.price)
+    vol    = float(trade.size)
+    ts     = datetime.now(ET)
+
+    cfg = shared_state["cfg"]
+
+    with _lock:
+        # Actualizar precio actual
+        shared_state["prices"][sym] = precio
+
+        # Actualizar volumen acumulado de vela actual
+        shared_state["vol_current"][sym] = \
+            shared_state["vol_current"].get(sym, 0) + vol
+
+        # Rolling window 5 minutos (deque con maxlen=300 = 300 ticks)
+        if sym not in shared_state["rolling"]:
+            shared_state["rolling"][sym] = deque(maxlen=300)
+        shared_state["rolling"][sym].append((ts, precio, vol))
+
+        shared_state["ws_trades"] += 1
+        shared_state["ws_last_tick"] = ts
+
+    # Evaluar despegue (sin lock para no bloquear)
+    ev = evaluar_despegue(sym)
+    force    = ev["force"]
+    despegue = ev["despegue"]
+
+    if despegue and force >= cfg.get("min_force", 60):
+        alerta = {
+            "ticker"    : sym,
+            "ts"        : ts.strftime("%H:%M:%S ET"),
+            "force"     : force,
+            "precio"    : precio,
+            "spike_1m"  : ev["spike_1m"],
+            "vel_1m"    : ev["vel_1m"],
+            "vel_5m"    : ev["vel_5m"],
+            "rvol"      : ev["rvol"],
+            "tps"       : ev["tps"],
+            "detalles"  : ev["detalles"],
+        }
+        with _lock:
+            # Evitar alertas duplicadas del mismo ticker en 60 seg
+            ts_limite = ts - timedelta(seconds=60)
+            alertas   = shared_state["alertas"]
+            ya_alerto = any(
+                a["ticker"] == sym and
+                datetime.strptime(a["ts"][:8], "%H:%M:%S").replace(
+                    tzinfo=ET, year=ts.year, month=ts.month, day=ts.day
+                ) > ts_limite
+                for a in alertas
+                if len(a.get("ts","")) >= 8
             )
-            if r.status_code == 200:
-                for item in r.json().get("data", []):
-                    s = item.get("symbol", "").strip().upper()
-                    if s and s.isalpha() and 2 <= len(s) <= 5:
-                        tickers.append(s)
+            if not ya_alerto:
+                shared_state["alertas"].insert(0, alerta)
+                # Mantener max 20 alertas
+                shared_state["alertas"] = shared_state["alertas"][:20]
+                shared_state["nueva_alerta"] = True
+
+
+async def on_error(error):
+    with _lock:
+        shared_state["ws_status"] = f"ERROR: {str(error)[:60]}"
+
+
+# ── HILO WEBSOCKET ───────────────────────────────────────────────────
+
+class WebSocketManager:
+    """
+    Gestor del WebSocket de Alpaca en hilo separado.
+    Permite suscribir/desuscribir tickers dinámicamente.
+    """
+    def __init__(self):
+        self._thread  = None
+        self._loop    = None
+        self._stream  = None
+        self._running = False
+
+    def start(self, tickers: list):
+        """Inicia el WebSocket en hilo de background."""
+        if self._running and self._thread and self._thread.is_alive():
+            # Ya corriendo — actualizar suscripciones
+            self._update_subscriptions(tickers)
+            return
+
+        with _lock:
+            shared_state["ws_status"]  = "CONECTANDO..."
+            shared_state["ws_tickers"] = tickers[:]
+
+        self._running = True
+        self._thread  = threading.Thread(
+            target=self._run_loop,
+            args=(tickers,),
+            daemon=True,   # daemon=True: el hilo muere cuando Streamlit para
+            name="thunder-ws"
+        )
+        self._thread.start()
+
+    def _run_loop(self, tickers: list):
+        """
+        Crea un event loop asyncio en el hilo de background.
+        Streamlit corre en el hilo principal — este hilo es independiente.
+        """
+        try:
+            self._loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(self._loop)
+            self._loop.run_until_complete(self._connect(tickers))
+        except Exception as e:
+            with _lock:
+                shared_state["ws_status"] = f"ERROR HILO: {str(e)[:80]}"
+            self._running = False
+
+    async def _connect(self, tickers: list):
+        """Conecta el StockDataStream y suscribe tickers."""
+        try:
+            self._stream = StockDataStream(
+                ALPACA_KEY,
+                ALPACA_SECRET,
+                feed="iex"      # IEX = gratis, sin suscripción premium
+            )
+
+            # Suscribir a barras de 1min (on_bar)
+            self._stream.subscribe_bars(on_bar, *tickers)
+
+            # Suscribir a trades (tick-by-tick) (on_trade)
+            # CRÍTICO: esto alimenta el detector de spikes en tiempo real
+            self._stream.subscribe_trades(on_trade, *tickers)
+
+            with _lock:
+                shared_state["ws_status"]  = "🟢 EN VIVO"
+                shared_state["ws_tickers"] = tickers[:]
+
+            # Correr indefinidamente
+            await self._stream._run_forever()
+
+        except Exception as e:
+            with _lock:
+                shared_state["ws_status"] = f"DESCONECTADO: {str(e)[:60]}"
+            self._running = False
+
+    def _update_subscriptions(self, new_tickers: list):
+        """
+        Actualiza la lista de tickers suscritos dinámicamente.
+        Se llama cuando el usuario cambia la lista desde Streamlit.
+        """
+        with _lock:
+            current   = set(shared_state["ws_tickers"])
+            nuevo_set = set(new_tickers)
+            to_add    = list(nuevo_set - current)
+            to_remove = list(current - nuevo_set)
+
+        if self._stream and self._loop and self._loop.is_running():
+            if to_add:
+                asyncio.run_coroutine_threadsafe(
+                    self._subscribe_more(to_add), self._loop)
+            shared_state["ws_tickers"] = new_tickers[:]
+
+    async def _subscribe_more(self, tickers: list):
+        try:
+            if self._stream:
+                self._stream.subscribe_bars(on_bar, *tickers)
+                self._stream.subscribe_trades(on_trade, *tickers)
         except Exception:
             pass
-    result = list(dict.fromkeys(tickers))
-    return result if len(result) > 500 else RESPALDO
 
-# ══════════════════════════════════════════════════════════════
-#  FUENTE 2: YAHOO FINANCE — TOP GAINERS TIEMPO REAL
-# ══════════════════════════════════════════════════════════════
+    def stop(self):
+        self._running = False
+        if self._loop:
+            try:
+                self._loop.stop()
+            except Exception:
+                pass
+
+
+# Instancia global del WebSocket Manager
+# @st.cache_resource asegura una sola instancia compartida entre reruns
+@st.cache_resource
+def get_ws_manager() -> WebSocketManager:
+    return WebSocketManager()
+
+ws_manager = get_ws_manager()
+
+
+# ─────────────────────────────────────────────────────────────────────
+#  SCANNER: YAHOO + TWELVE DATA (sin WebSocket — solo para lista)
+# ─────────────────────────────────────────────────────────────────────
 YH = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
       "Accept": "application/json"}
 
-def yahoo_screen(sid: str, n: int = 100) -> list:
-    for base in ["https://query1.finance.yahoo.com",
-                 "https://query2.finance.yahoo.com"]:
+def obtener_top_gainers(precio_min: float, precio_max: float,
+                         n: int = 80) -> pd.DataFrame:
+    """Obtiene top gainers de Yahoo Finance (mismos que Webull Top Gainers)."""
+    resultados = []
+    for sid in ["day_gainers", "most_actives", "small_cap_gainers"]:
+        for base in ["https://query1.finance.yahoo.com",
+                     "https://query2.finance.yahoo.com"]:
+            try:
+                r = requests.get(
+                    f"{base}/v1/finance/screener/predefined/saved",
+                    headers=YH,
+                    params={"scrIds": sid, "count": 50, "formatted": "false"},
+                    timeout=10
+                )
+                if r.status_code == 200:
+                    quotes = (r.json().get("finance",{})
+                               .get("result",[{}])[0].get("quotes",[]))
+                    for q in quotes:
+                        sym = q.get("symbol","").strip().upper()
+                        if not sym or not sym.isalpha() or not (1<len(sym)<=5):
+                            continue
+                        precio = float(q.get("regularMarketPrice", 0))
+                        if not (precio_min <= precio <= precio_max):
+                            continue
+                        chg = float(q.get("regularMarketChangePercent", 0))
+                        vol = float(q.get("regularMarketVolume", 0))
+                        if chg > 0:
+                            resultados.append({
+                                "Ticker"  : sym,
+                                "Precio $": round(precio, 4),
+                                "Δ Día %" : round(chg, 2),
+                                "Vol"     : int(vol),
+                            })
+                    break
+            except Exception:
+                continue
+        if resultados:
+            break
+
+    # Twelve Data como complemento
+    if TWELVE_KEY:
         try:
-            r = requests.get(
-                f"{base}/v1/finance/screener/predefined/saved",
-                headers=YH,
-                params={"scrIds": sid, "count": n, "formatted": "false"},
-                timeout=12
-            )
-            if r.status_code == 200:
-                quotes = (r.json().get("finance", {})
-                           .get("result", [{}])[0]
-                           .get("quotes", []))
-                out = []
-                for q in quotes:
-                    s = q.get("symbol", "").strip().upper()
-                    if s and s.isalpha() and 1 <= len(s) <= 5:
-                        out.append(s)
-                if out:
-                    return out
+            for exc in ["NYSE","NASDAQ","AMEX"]:
+                r2 = requests.get(
+                    "https://api.twelvedata.com/stocks/market/movers",
+                    params={"exchange":exc,"direction":"gainers",
+                            "outputsize":25,"country":"US","apikey":TWELVE_KEY},
+                    timeout=10)
+                if r2.status_code == 200 and "values" in r2.json():
+                    for item in r2.json()["values"]:
+                        sym = item.get("symbol","").strip().upper()
+                        if not sym or not sym.isalpha() or not (1<len(sym)<=5):
+                            continue
+                        precio = float(item.get("price",0))
+                        if not (precio_min <= precio <= precio_max):
+                            continue
+                        chg = float(item.get("percent_change",0))
+                        if chg > 0 and not any(r["Ticker"]==sym for r in resultados):
+                            resultados.append({
+                                "Ticker"  :sym,
+                                "Precio $":round(precio,4),
+                                "Δ Día %" :round(chg,2),
+                                "Vol"     :int(float(item.get("volume",0))),
+                            })
         except Exception:
             pass
-    return []
 
-def obtener_yahoo_gainers() -> dict:
-    day_g  = yahoo_screen("day_gainers",       100)
-    active = yahoo_screen("most_actives",      100)
-    small  = yahoo_screen("small_cap_gainers", 100)
-    todos  = list(dict.fromkeys(day_g + active + small))
-    return {
-        "day_gainers": day_g,
-        "most_actives": active,
-        "small_cap": small,
-        "todos": todos,
-        "n_day": len(day_g),
-        "n_active": len(active),
-        "n_small": len(small),
-        "n_total": len(todos),
-    }
-
-# ══════════════════════════════════════════════════════════════
-#  EXTRACTOR SEGURO DE DATAFRAME (corrige bug RVOL=0)
-# ══════════════════════════════════════════════════════════════
-def xdf(raw, ticker: str, n_tickers: int):
-    try:
-        if n_tickers == 1:
-            df = raw.copy()
-        else:
-            if not isinstance(raw.columns, pd.MultiIndex):
-                return None
-            lvl0 = raw.columns.get_level_values(0).unique().tolist()
-            lvl1 = raw.columns.get_level_values(1).unique().tolist()
-            if ticker in lvl1:
-                df = raw.xs(ticker, axis=1, level=1)
-            elif ticker in lvl0:
-                df = raw[ticker].copy()
-            else:
-                return None
-        if isinstance(df.columns, pd.MultiIndex):
-            df.columns = [c[0] if isinstance(c, tuple) else c for c in df.columns]
-        needed = {"Close", "High", "Low", "Open", "Volume"}
-        if not needed.issubset(set(df.columns)):
-            return None
-        df = df.dropna(subset=["Close", "Volume"])
-        return df if len(df) >= 3 else None
-    except Exception:
-        return None
-
-# ══════════════════════════════════════════════════════════════
-#  PASO A: PRE-FILTRO RÁPIDO 5min
-#  Descarga datos de 5min para TODO el universo.
-#  Calcula % cambio reciente SIN timezone math.
-#  Retorna top N más activos.
-# ══════════════════════════════════════════════════════════════
-def prefiltro_5min(universo: list,
-                   precio_min: float, precio_max: float,
-                   n_max: int = 300,
-                   label: str = "") -> pd.DataFrame:
-    """
-    Descarga datos 5min para todo el universo.
-    Calcula:
-      - Δ% reciente (últimas 30 velas = ~2.5 horas)
-      - Δ% últimas 2 velas (= últimos 10 min)
-      - Δ% última vela (= últimos 5 min)
-      - RVOL 5min
-    Devuelve DataFrame ordenado por actividad.
-    """
-    resultados = []
-    total = len(universo)
-    lote  = 100
-    pb    = st.progress(0.0, text=f"📡 Pre-filtro 5min {label}...")
-
-    for i in range(0, total, lote):
-        chunk = universo[i:i+lote]
-        pb.progress(min((i+lote)/total, 1.0),
-                    text=f"📡 Pre-filtro: {min(i+lote,total)}/{total}...")
-        try:
-            raw = yf.download(
-                chunk, period="1d", interval="5m",
-                group_by="ticker", prepost=True,
-                progress=False, auto_adjust=True,
-                threads=True, timeout=20
-            )
-            for t in chunk:
-                try:
-                    df = xdf(raw, t, len(chunk))
-                    if df is None or len(df) < 4:
-                        continue
-                    precio = float(df["Close"].iloc[-1])
-                    if not (precio_min <= precio <= precio_max):
-                        continue
-
-                    c1 = float(df["Close"].iloc[-1])
-                    c2 = float(df["Close"].iloc[-2])
-                    c3 = float(df["Close"].iloc[-3])
-
-                    # Δ% últimos 5 min (última vela)
-                    d5m  = (c1 - c2) / max(c2, 1e-9) * 100
-                    # Δ% últimos 10 min (2 velas)
-                    d10m = (c1 - c3) / max(c3, 1e-9) * 100
-                    # Δ% reciente (últimas 30 velas ~2.5h)
-                    lb   = min(30, len(df) - 1)
-                    cbase= float(df["Close"].iloc[-(lb+1)])
-                    drec = (c1 - cbase) / max(cbase, 1e-9) * 100
-
-                    # RVOL 5min
-                    vol_ult  = float(df["Volume"].iloc[-1])
-                    vol_prom = float(df["Volume"].mean())
-                    rvol5    = vol_ult / max(vol_prom, 1)
-
-                    # Acelerando: última vela > anterior
-                    v1 = (c1-c2)/max(c2,1e-9)*100
-                    v2 = (c2-c3)/max(c3,1e-9)*100
-                    acel = v1 > v2
-
-                    # Score de actividad
-                    score = (min(abs(d5m),20)/20*35 +
-                             min(rvol5,10)/10*30 +
-                             (20 if acel and d5m>0 else 0) +
-                             min(abs(drec),40)/40*15)
-
-                    resultados.append({
-                        "Ticker"   : t,
-                        "Precio $" : round(precio, 4),
-                        "Δ 5min %" : round(d5m, 2),
-                        "Δ 10min %": round(d10m, 2),
-                        "Δ Reciente%": round(drec, 2),
-                        "RVOL 5m"  : round(rvol5, 1),
-                        "Acel"     : "⚡ SÍ" if (acel and d5m>0) else "→ NO",
-                        "Score"    : round(score, 1),
-                        "Vol"      : int(vol_ult),
-                    })
-                except Exception:
-                    continue
-        except Exception:
-            continue
-
-    pb.empty()
     if not resultados:
         return pd.DataFrame()
 
-    df_r = pd.DataFrame(resultados)
-    df_r = df_r.sort_values("Score", ascending=False).reset_index(drop=True)
-    return df_r.head(n_max)
+    df = (pd.DataFrame(resultados)
+            .drop_duplicates(subset=["Ticker"])
+            .sort_values("Δ Día %", ascending=False)
+            .reset_index(drop=True)
+            .head(n))
+    return df
 
-# ══════════════════════════════════════════════════════════════
-#  SUPERTREND
-# ══════════════════════════════════════════════════════════════
-def supertrend(df, per=10, mult=3.0):
-    try:
-        h = df["H"]; l = df["L"]; c = df["C"]
-        n = len(df)
-        if n < per + 2:
-            df["st_dir"] = 1; df["st_val"] = c*0.98; df["st_cross"] = 0
-            return df
-        hl = h-l
-        hc = (h-c.shift(1)).abs()
-        lc = (l-c.shift(1)).abs()
-        atr = pd.concat([hl,hc,lc],axis=1).max(axis=1).rolling(per).mean()
-        mid = (h+l)/2
-        ubr = mid+mult*atr; lbr = mid-mult*atr
-        ub = ubr.copy(); lb = lbr.copy()
-        for i in range(1,n):
-            ub.iloc[i] = min(ubr.iloc[i],ub.iloc[i-1]) if c.iloc[i-1]<=ub.iloc[i-1] else ubr.iloc[i]
-            lb.iloc[i] = max(lbr.iloc[i],lb.iloc[i-1]) if c.iloc[i-1]>=lb.iloc[i-1] else lbr.iloc[i]
-        d = pd.Series(1.0, index=df.index)
-        for i in range(1,n):
-            if d.iloc[i-1]==1:
-                d.iloc[i] = 1 if c.iloc[i]>=lb.iloc[i] else -1
-            else:
-                d.iloc[i] = -1 if c.iloc[i]<=ub.iloc[i] else 1
-        df["st_dir"]   = d.values
-        df["st_val"]   = np.where(d==1, lb.values, ub.values)
-        df["st_cross"] = (d!=d.shift(1)).fillna(False).astype(int).values
-        return df
-    except Exception:
-        df["st_dir"]=1; df["st_val"]=df.get("C",df["Close"])*0.98; df["st_cross"]=0
-        return df
 
-# ══════════════════════════════════════════════════════════════
-#  INDICADORES TÉCNICOS 1min
-# ══════════════════════════════════════════════════════════════
-def indicadores(df_raw, st_per, st_mult):
-    try:
-        df = df_raw.copy()
-        def ts(col):
-            x = pd.to_numeric(df[col], errors="coerce").squeeze()
-            return x.iloc[:,0] if isinstance(x, pd.DataFrame) else x
-        C,H,L,O,V = ts("Close"),ts("High"),ts("Low"),ts("Open"),ts("Volume").fillna(0)
-        df["C"]=C.values; df["H"]=H.values; df["L"]=L.values
-        df["O"]=O.values; df["V"]=V.values
-        n = len(df)
-        if n < 3: return None
-
-        df["e9"]  = df["C"].ewm(span=min(9,n),  adjust=False).mean()
-        df["e20"] = df["C"].ewm(span=min(20,n), adjust=False).mean()
-        tp = (df["H"]+df["L"]+df["C"])/3
-        cv = df["V"].cumsum()
-        df["vwap"] = np.where(cv>0,(tp*df["V"]).cumsum()/cv, df["C"])
-
-        d  = df["C"].diff()
-        g  = d.where(d>0,0.0).rolling(min(14,n)).mean()
-        ls = (-d.where(d<0,0.0)).rolling(min(14,n)).mean()
-        df["rsi"] = (100-100/(1+g/ls.replace(0,np.nan))).fillna(50)
-
-        df["macd"]   = (df["C"].ewm(span=min(12,n),adjust=False).mean()
-                       -df["C"].ewm(span=min(26,n),adjust=False).mean())
-        df["macd_s"] = df["macd"].ewm(span=min(9,n),adjust=False).mean()
-        df["macd_h"] = df["macd"]-df["macd_s"]
-
-        hl = df["H"]-df["L"]
-        hc = (df["H"]-df["C"].shift(1)).abs()
-        lc = (df["L"]-df["C"].shift(1)).abs()
-        df["atr"] = (pd.concat([hl,hc,lc],axis=1).max(axis=1)
-                       .rolling(min(14,n)).mean().fillna(df["C"]*0.01))
-        w = min(20,n)
-        df["sup"] = df["L"].rolling(w).min().fillna(df["C"]*0.97)
-        df["res"] = df["H"].rolling(w).max().fillna(df["C"]*1.03)
-
-        # RVOL corregido
-        wv = min(10, n-1)
-        vavg = df["V"].rolling(wv).mean() if wv>=2 else pd.Series(df["V"].mean(), index=df.index)
-        vavg = vavg.fillna(df["V"].mean()).replace(0, df["V"].mean()).replace(0, 1)
-        df["vavg"] = vavg
-        df["rvol"] = df["V"] / df["vavg"]
-
-        df["v1"] = df["C"].pct_change(1)*100
-        df["v2"] = df["C"].pct_change(2)*100
-        df["v3"] = df["C"].pct_change(3)*100
-        df["ac"] = df["v1"]-df["v1"].shift(1)
-
-        df = supertrend(df, st_per, st_mult)
-        return df
-    except Exception:
-        return None
-
-# ══════════════════════════════════════════════════════════════
-#  MOTOR DE SEÑAL — SCORE 1-10
-# ══════════════════════════════════════════════════════════════
-def gv(row, col, default=0.0):
-    try:
-        v = float(row[col])
-        return default if (np.isnan(v) or np.isinf(v)) else v
-    except Exception:
-        return default
-
-def motor(df, session, cambio_dia, es_yahoo, chg_5m):
-    if df is None or len(df) < 3:
-        return 1,1,"⚪ NEUTRO",{},0.0,0.0,1
-
-    a = df.iloc[-1]
-    p = df.iloc[-2] if len(df)>1 else df.iloc[-1]
-    precio = gv(a,"C")
-    if precio <= 0: return 1,1,"⚪ NEUTRO",{},0.0,0.0,1
-
-    up = dn = 0.0
-    det = {}
-
-    # 1. RVOL (22%)
-    rv = gv(a,"rvol",1)
-    if rv>=10:   up+=2.2; det["RVOL"]=f"🔥🔥🔥 {rv:.1f}x EXPLOSIVO"
-    elif rv>=5:  up+=1.8; det["RVOL"]=f"🔥🔥 {rv:.1f}x Muy alto"
-    elif rv>=2.5:up+=1.2; det["RVOL"]=f"🔥 {rv:.1f}x Elevado"
-    elif rv>=1.3:up+=0.6; det["RVOL"]=f"▲ {rv:.1f}x Sobre promedio"
-    else:        det["RVOL"]=f"→ {rv:.1f}x Normal"
-
-    # 2. VELOCIDAD 1min (22%)
-    v1 = gv(a,"v1")
-    if v1>=3:    up+=2.2; det["VEL"]=f"🚀🚀 {v1:+.2f}%/min COHETE"
-    elif v1>=1:  up+=1.6; det["VEL"]=f"🚀 {v1:+.2f}%/min Fuerte"
-    elif v1>=0.2:up+=0.9; det["VEL"]=f"▲ {v1:+.2f}%/min Positivo"
-    elif v1>=0.03:up+=0.3;det["VEL"]=f"▲ {v1:+.2f}%/min Leve"
-    elif v1<=-3: dn+=2.2; det["VEL"]=f"💥 {v1:+.2f}%/min CAÍDA"
-    elif v1<=-1: dn+=1.6; det["VEL"]=f"▼▼ {v1:+.2f}%/min Bajando"
-    elif v1<=-0.03:dn+=0.5;det["VEL"]=f"▼ {v1:+.2f}%/min Leve baja"
-    else:        det["VEL"]=f"→ {v1:+.2f}%/min Plano"
-
-    # 3. ACELERACIÓN (18%)
-    va,vb = gv(a,"v1"),gv(p,"v1")
-    if va>0 and vb>=0 and va>vb:
-        up+=1.8; det["ACEL"]=f"⚡ Acelerando {vb:+.2f}%→{va:+.2f}%"
-    elif va>0 and va>vb:
-        up+=0.9; det["ACEL"]=f"▲ Vel subiendo {vb:+.2f}%→{va:+.2f}%"
-    elif va<0 and vb<=0 and va<vb:
-        dn+=1.8; det["ACEL"]=f"⚡ Cayendo {vb:+.2f}%→{va:+.2f}%"
-    elif va<0 and va<vb:
-        dn+=0.9; det["ACEL"]=f"▼ Caída {vb:+.2f}%→{va:+.2f}%"
-    else:
-        det["ACEL"]="→ Sin aceleración"
-
-    # 4. SUPERTREND (18%)
-    st_dir  = gv(a,"st_dir",1)
-    st_val  = gv(a,"st_val",precio)
-    st_crux = int(gv(a,"st_cross",0))
-    dist    = abs(precio-st_val)/max(precio,1e-9)*100
-    if st_dir==1:
-        up+=1.8; det["ST"]=f"✅ ALCISTA soporte ${st_val:.4f} ({dist:.1f}%↓)"
-        if st_crux: up+=1.4; det["ST"]+=" 🔔 CRUCE ALCISTA"
-    else:
-        dn+=1.8; det["ST"]=f"❌ BAJISTA resist ${st_val:.4f} ({dist:.1f}%↑)"
-        if st_crux: dn+=1.4; det["ST"]+=" 🔔 CRUCE BAJISTA"
-
-    # 5. TÉCNICO (10%)
-    vwap=gv(a,"vwap",precio); e9=gv(a,"e9",precio); e20=gv(a,"e20",precio)
-    rsi=gv(a,"rsi",50); mh=gv(a,"macd_h",0); mhp=gv(p,"macd_h",0)
-    pts = ((0.3 if precio>vwap else 0)+(0.3 if e9>e20 else 0)+
-           (0.3 if mh>mhp and mh>0 else 0)+(0.2 if 50<rsi<80 else 0)+
-           (-0.3 if rsi>=80 or rsi<=20 else 0))
-    if pts>=0.7:   up+=1.0; det["TEC"]=f"▲▲ Alcista (RSI={rsi:.0f},VWAP✓,EMA✓)"
-    elif pts>=0.3: up+=0.5; det["TEC"]=f"▲ Parcial (RSI={rsi:.0f})"
-    elif pts<=-0.2:dn+=0.5; det["TEC"]=f"▼ Bajista (RSI={rsi:.0f})"
-    else:          det["TEC"]=f"→ Neutro (RSI={rsi:.0f})"
-
-    # 6. BONUS: Yahoo Top Gainer (10%)
-    if es_yahoo:
-        if cambio_dia>=50:   up+=2.0; det["YAHOO"]=f"🏆🏆 TOP GAINER {cambio_dia:+.1f}%"
-        elif cambio_dia>=20: up+=1.5; det["YAHOO"]=f"🏆 Top Gainer {cambio_dia:+.1f}%"
-        elif cambio_dia>=5:  up+=1.0; det["YAHOO"]=f"▲ Gainer fuerte {cambio_dia:+.1f}%"
-        else:                up+=0.5; det["YAHOO"]=f"▲ Gainer {cambio_dia:+.1f}%"
-
-    # 7. BONUS: Momentum 5min (10%)
-    if chg_5m>=5:   up+=1.5; det["5MIN"]=f"🔥 +{chg_5m:.2f}% en 5min TOP"
-    elif chg_5m>=2: up+=1.0; det["5MIN"]=f"⚡ +{chg_5m:.2f}% en 5min"
-    elif chg_5m>=0.5:up+=0.4;det["5MIN"]=f"▲ +{chg_5m:.2f}% en 5min"
-    elif chg_5m!=0:  det["5MIN"]=f"→ {chg_5m:+.2f}% en 5min"
-
-    # 8. Patrón velas
-    c1=gv(df.iloc[-1],"C"); o1=gv(df.iloc[-1],"O",c1)
-    c2=gv(df.iloc[-2],"C",c1) if len(df)>1 else c1
-    o2=gv(df.iloc[-2],"O",c2) if len(df)>1 else c2
-    c3=gv(df.iloc[-3],"C",c2) if len(df)>2 else c2
-    o3=gv(df.iloc[-3],"O",c3) if len(df)>2 else c3
-    if (c1>o1)and(c2>o2)and(c3>o3)and(c1>c2>c3):
-        up+=0.8; det["VELAS"]="🟢🟢🟢 3 verdes"
-    elif (c1>o1)and(c2>o2)and(c1>c2):
-        up+=0.4; det["VELAS"]="🟢🟢 2 verdes"
-    elif (c1<o1)and(c2<o2)and(c3<o3)and(c1<c2<c3):
-        dn+=0.8; det["VELAS"]="🔴🔴🔴 3 rojas"
-    elif (c1<o1)and(c2<o2):
-        dn+=0.4; det["VELAS"]="🔴🔴 2 rojas"
-    else:
-        det["VELAS"]="→ Sin patrón"
-
-    mx = 2.2+2.2+1.8+3.2+1.0+2.0+1.5+0.8
-    su = max(1,min(10,round(max(up,0)/mx*10)))
-    sd = max(1,min(10,round(max(dn,0)/mx*10)))
-
-    if   su>=9: senal="🚀 DESPEGUE — COMPRA AHORA"
-    elif su>=7: senal="⚡ EXPLOSIÓN ALCISTA"
-    elif su>=5: senal="📈 IMPULSO ALCISTA"
-    elif sd>=9: senal="💥 CAÍDA FUERTE"
-    elif sd>=7: senal="📉 SEÑAL BAJISTA"
-    elif sd>=5: senal="▼ BAJISTA"
-    else:       senal="⚪ NEUTRO"
-
-    return su,sd,senal,det,rv,v1,int(st_dir)
-
-# ══════════════════════════════════════════════════════════════
+# ─────────────────────────────────────────────────────────────────────
 #  SL / TP DINÁMICO
-# ══════════════════════════════════════════════════════════════
-def sltp(df, precio, senal, msl, mtp):
+# ─────────────────────────────────────────────────────────────────────
+def calcular_sltp(precio: float, ask: float,
+                   bars: list, atr_mult: float = 2.0,
+                   min_rr: float = 2.0) -> dict:
+    """Calcula SL/TP basado en ATR de las barras históricas."""
     try:
-        a=df.iloc[-1]
-        atr=gv(a,"atr",precio*0.015)
-        sup=gv(a,"sup",precio*0.97); res=gv(a,"res",precio*1.03)
-        stv=gv(a,"st_val",0)
-        if sup<=0 or sup>=precio: sup=precio*0.97
-        if res<=0 or res<=precio: res=precio*1.03
-        alc = any(x in senal for x in ["DESPEGUE","COMPRA","ALCISTA","IMPULSO","EXPLOS"])
-        if alc:
-            sl = max(precio-atr*msl, sup*0.998)
-            if 0<stv<precio: sl=max(sl,stv*0.997)
-            sl=round(sl,4); tp=round(min(precio+atr*mtp,res*0.999),4)
+        if bars and len(bars) >= 5:
+            trues = []
+            for i in range(1, len(bars)):
+                hl  = bars[i]["high"] - bars[i]["low"]
+                hc  = abs(bars[i]["high"] - bars[i-1]["close"])
+                lc  = abs(bars[i]["low"]  - bars[i-1]["close"])
+                trues.append(max(hl, hc, lc))
+            atr = sum(trues[-14:]) / min(len(trues[-14:]), 14)
+            sup = min(b["low"] for b in bars[-10:])
         else:
-            sl=round(min(precio+atr*msl,res*1.002),4)
-            tp=round(max(precio-atr*mtp,sup*1.001),4)
-        if sl<=0: sl=round(precio*0.97,4)
-        if tp<=0: tp=round(precio*1.06,4)
-        rr=round(abs(tp-precio)/max(abs(precio-sl),1e-9),2)
-        return sl,tp,rr
+            atr = precio * 0.015
+            sup = precio * 0.97
+
+        entrada = round(ask * 1.005 if ask > 0 else precio * 1.005, 4)
+        sl      = round(max(precio - atr*atr_mult, sup*0.998), 4)
+        sl      = max(sl, precio * 0.92)   # máx 8% pérdida
+        riesgo  = precio - sl
+        tp      = round(precio + riesgo*min_rr, 4)
+        rr      = round((tp-precio)/max(riesgo,1e-9), 2)
+
+        return {"entrada":entrada,"sl":sl,"tp":tp,"rr":rr,"atr":round(atr,4)}
     except Exception:
-        return round(precio*0.97,4),round(precio*1.06,4),2.0
+        sl = round(precio*0.97, 4)
+        return {"entrada":round(precio*1.005,4),"sl":sl,
+                "tp":round(precio*1.06,4),"rr":2.0,"atr":round(precio*0.015,4)}
 
-# ══════════════════════════════════════════════════════════════
-#  ESCANEO FINAL 1min
-# ══════════════════════════════════════════════════════════════
-def escanear_1min(candidatos: dict,
-                  precio_min, precio_max,
-                  rvol_min, vel_min,
-                  msl, mtp, session,
-                  st_per, st_mult, top_n) -> pd.DataFrame:
-    """
-    candidatos: {ticker: {"cambio_dia":float, "es_yahoo":bool, "chg_5m":float}}
-    """
-    if not candidatos: return pd.DataFrame()
 
-    tickers = list(candidatos.keys())
-    res = []; total=len(tickers); lote=50; dfs={}
-    pb = st.progress(0.0, text="⚡ Descargando datos 1min...")
-
-    for i in range(0,total,lote):
-        chunk=tickers[i:i+lote]
-        pb.progress(min((i+lote)/total*0.45,0.45),
-                    text=f"📡 1min {min(i+lote,total)}/{total}...")
-        try:
-            raw=yf.download(chunk,period="1d",interval="1m",
-                            group_by="ticker",prepost=True,
-                            progress=False,auto_adjust=True,
-                            threads=True,timeout=25)
-            for t in chunk:
-                dfs[t]=xdf(raw,t,len(chunk))
-        except Exception:
-            for t in chunk:
-                try:
-                    s=yf.download(t,period="1d",interval="1m",
-                                  prepost=True,progress=False,
-                                  auto_adjust=True,threads=False,timeout=12)
-                    dfs[t]=xdf(s,t,1)
-                except Exception:
-                    dfs[t]=None
-
-    for idx,t in enumerate(tickers):
-        pb.progress(0.45+(idx+1)/total*0.55,
-                    text=f"🔬 {t} ({idx+1}/{total})...")
-        try:
-            raw_df=dfs.get(t)
-            if raw_df is None or len(raw_df)<5: continue
-            df=indicadores(raw_df,st_per,st_mult)
-            if df is None: continue
-            precio=float(df["C"].iloc[-1])
-            if not (precio_min<=precio<=precio_max): continue
-
-            rv  = float(df["rvol"].iloc[-1]) if not np.isnan(df["rvol"].iloc[-1]) else 1.0
-            vel1= float(df["v1"].iloc[-1])   if not np.isnan(df["v1"].iloc[-1])   else 0.0
-
-            info     = candidatos.get(t,{})
-            cd       = info.get("cambio_dia",0.0)
-            es_yahoo = info.get("es_yahoo",False)
-            chg5     = info.get("chg_5m",0.0)
-
-            # Filtros adaptativos
-            if es_yahoo or chg5>=2.0:
-                pasa=(rv>=max(1.0,rvol_min*0.25)) or (abs(vel1)>=max(0.01,vel_min*0.15))
-            elif session=="REGULAR":
-                pasa=(rv>=rvol_min) and (abs(vel1)>=vel_min)
-            else:
-                pasa=(rv>=max(1.1,rvol_min*0.4)) or (abs(vel1)>=max(0.02,vel_min*0.25))
-            if not pasa: continue
-
-            su,sd,senal,det,rv,vel1,st_dir=motor(df,session,cd,es_yahoo,chg5)
-
-            if session=="REGULAR" and not es_yahoo and chg5<1.0 and su<3 and sd<3:
-                continue
-
-            _sl,_tp,rr=sltp(df,precio,senal,msl,mtp)
-            open_d=float(df["O"].iloc[0]) if float(df["O"].iloc[0])>0 else precio
-            cd_real=(precio-open_d)/max(open_d,1e-9)*100
-            rsi=float(df["rsi"].iloc[-1])
-            sup=float(df["sup"].iloc[-1]); res_=float(df["res"].iloc[-1])
-            vel2=float(df["v2"].iloc[-1]) if not np.isnan(df["v2"].iloc[-1]) else 0
-            ac=float(df["ac"].iloc[-1])   if not np.isnan(df["ac"].iloc[-1]) else 0
-            stv=float(df["st_val"].iloc[-1]) if "st_val" in df.columns else 0
-            st_tx="🟢 ALCISTA" if st_dir==1 else "🔴 BAJISTA"
-
-            if   es_yahoo and chg5>=2: fuente="🏆🔥 Yahoo+5min"
-            elif es_yahoo:             fuente="🏆 Yahoo"
-            elif chg5>=2:              fuente="🔥 5min"
-            else:                      fuente="📋 Universo"
-
-            res.append({
-                "Ticker"    :t,
-                "Fuente"    :fuente,
-                "Precio $"  :round(precio,4),
-                "RVOL"      :round(rv,1),
-                "Vel 1m %"  :round(vel1,2),
-                "Vel 2m %"  :round(vel2,2),
-                "Δ 5m %"    :round(chg5,2),
-                "Acel"      :round(ac,3),
-                "Supertrend":st_tx,
-                "ST $"      :round(stv,4),
-                "Δ Día %"   :round(cd if cd!=0 else cd_real,2),
-                "Score 🐂"  :su,
-                "Score 🐻"  :sd,
-                "Señal"     :senal,
-                "RSI"       :round(rsi,1),
-                "Soporte $" :round(sup,4),
-                "Resist $"  :round(res_,4),
-                "SL $"      :_sl,
-                "TP $"      :_tp,
-                "R:R"       :rr,
-                "_det"      :det,
-                "_df"       :df,
-            })
-        except Exception:
-            continue
-
-    pb.empty()
-    if not res: return pd.DataFrame()
-
-    df_r=pd.DataFrame(res)
-    pmap={"🏆🔥 Yahoo+5min":0,"🏆 Yahoo":1,"🔥 5min":2,"📋 Universo":3}
-    df_r["_p"]=df_r["Fuente"].map(pmap).fillna(4)
-    df_r=df_r.sort_values(["_p","Score 🐂","RVOL","Vel 1m %"],
-                           ascending=[True,False,False,False])
-    return df_r.drop(columns=["_p"]).reset_index(drop=True).head(top_n)
-
-# ══════════════════════════════════════════════════════════════
-#  ALPACA HELPERS
-# ══════════════════════════════════════════════════════════════
-def get_cuenta():
-    try:    return alpaca.get_account()
-    except: return None
-def get_pos():
-    try:    return alpaca.get_all_positions()
-    except: return []
-def cerrar(sym):
-    try:    alpaca.close_position(sym); return True,f"✅ Cerrada {sym}"
-    except Exception as e: return False,str(e)
-def buy(sym,qty,sl,tp):
+# ─────────────────────────────────────────────────────────────────────
+#  EJECUCIÓN DE ÓRDENES — LIMIT ORDER
+# ─────────────────────────────────────────────────────────────────────
+def execute_limit_buy(sym: str, qty: int,
+                       limit_price: float, sl: float, tp: float) -> tuple:
     try:
-        alpaca.submit_order(MarketOrderRequest(
-            symbol=sym,qty=qty,side=OrderSide.BUY,time_in_force=TimeInForce.GTC,
+        req = LimitOrderRequest(
+            symbol=sym, qty=qty, side=OrderSide.BUY,
+            time_in_force=TimeInForce.DAY,
+            limit_price=round(float(limit_price),2),
             take_profit=TakeProfitRequest(limit_price=round(float(tp),2)),
-            stop_loss=StopLossRequest(stop_price=round(float(sl),2))))
-        return True,f"✅ BUY {qty}x {sym} SL=${sl} TP=${tp}"
-    except Exception as e: return False,f"❌ {e}"
-def sell(sym,qty):
-    try:
-        alpaca.submit_order(MarketOrderRequest(
-            symbol=sym,qty=qty,side=OrderSide.SELL,time_in_force=TimeInForce.GTC))
-        return True,f"✅ SELL {qty}x {sym}"
-    except Exception as e: return False,f"❌ {e}"
+            stop_loss=StopLossRequest(stop_price=round(float(sl),2))
+        )
+        trading.submit_order(req)
+        return True, f"✅ LIMIT BUY {qty}x {sym} @ ${limit_price:.4f} | SL=${sl:.4f} TP=${tp:.4f}"
+    except Exception as e:
+        return False, f"❌ {e}"
 
-# ══════════════════════════════════════════════════════════════
-#  ENCABEZADO
-# ══════════════════════════════════════════════════════════════
-st.markdown('<h1 class="hdr">⚡ THUNDER RADAR V97</h1>',unsafe_allow_html=True)
-st.markdown('<p class="sub">UNIVERSO COMPLETO · YAHOO TOP GAINERS · MOMENTUM 5MIN · SUPERTREND · ALPACA PAPER</p>',
+
+def execute_market_sell(sym: str, qty: int) -> tuple:
+    try:
+        trading.submit_order(MarketOrderRequest(
+            symbol=sym, qty=qty, side=OrderSide.SELL,
+            time_in_force=TimeInForce.GTC))
+        return True, f"✅ SELL MARKET {qty}x {sym}"
+    except Exception as e:
+        return False, f"❌ {e}"
+
+
+def get_account():
+    try:    return trading.get_account()
+    except: return None
+
+def get_positions():
+    try:    return trading.get_all_positions()
+    except: return []
+
+
+# ─────────────────────────────────────────────────────────────────────
+#  UI HELPERS
+# ─────────────────────────────────────────────────────────────────────
+def force_bar(force: int, despegue: bool) -> str:
+    pct   = force
+    color = ("#ff0000" if despegue else
+             "#ff4500" if force>=80 else
+             "#ff8c00" if force>=60 else
+             "#ffc107" if force>=40 else "#374151")
+    label = f"{'🔥'*(force//25)} {force}/100"
+    return (f'<div class="force-bg">'
+            f'<div class="force-fill" style="width:{pct}%;background:{color}">{label}</div>'
+            f'</div>')
+
+
+# ─────────────────────────────────────────────────────────────────────
+#  ═══════════════════ INTERFAZ PRINCIPAL ═══════════════════
+# ─────────────────────────────────────────────────────────────────────
+st.markdown('<h1 class="hdr">⚡ THUNDER RADAR V99</h1>', unsafe_allow_html=True)
+st.markdown('<p class="sub">WEBSOCKET TICK-BY-TICK · ROLLING 5MIN · SPIKE DETECTOR · ALPACA PAPER</p>',
             unsafe_allow_html=True)
 
-bm={"REGULAR":"b-reg","PRE-MARKET":"b-pre","AFTER-HOURS":"b-aft","CERRADO":"b-cls"}
-tz_et=pytz.timezone("US/Eastern")
-hora_et=datetime.now(tz_et).strftime("%H:%M:%S ET")
-cuenta=get_cuenta()
+bm = {"REGULAR":"b-reg","PRE-MARKET":"b-pre","AFTER-HOURS":"b-aft","CERRADO":"b-cls"}
+hora_et = datetime.now(ET).strftime("%H:%M:%S ET")
+cuenta  = get_account()
 
-h1,h2,h3=st.columns(3)
-with h1:
+hc1,hc2,hc3 = st.columns(3)
+with hc1:
     st.markdown(f'<span class="badge {bm.get(SESSION,"b-cls")}">● {SESSION}</span>'
                 f' &nbsp;<span class="dot"></span>'
                 f'<span style="color:#8b949e;font-size:.73em">EN VIVO</span>',
                 unsafe_allow_html=True)
-with h2:
-    st.markdown(f'<span style="color:#8b949e">🕐 {hora_et}</span>',unsafe_allow_html=True)
-with h3:
+with hc2:
+    st.markdown(f'<span style="color:#8b949e">🕐 {hora_et}</span>', unsafe_allow_html=True)
+with hc3:
     if cuenta:
-        eq=float(cuenta.equity); pnl=eq-float(cuenta.last_equity)
-        col="#00ff88" if pnl>=0 else "#ff4444"
+        eq  = float(cuenta.equity)
+        pnl = eq - float(cuenta.last_equity)
+        col = "#00ff88" if pnl>=0 else "#ff4444"
         st.markdown(f'<span style="color:{col}">💰 ${eq:,.2f} | P&L {pnl:+,.2f}</span>',
                     unsafe_allow_html=True)
 
-st.markdown("""<div class="ibox">
-<b style="color:#00ff88">V97 — UNIVERSO COMPLETO:</b>
-Combina <b>Twelve Data (5,000+ acciones)</b> +
-<b>Yahoo Finance Top Gainers (tiempo real)</b> +
-<b>Detector Momentum 5min (Webull style)</b> +
-<b>Motor de señal 1min con Supertrend + RVOL corregido</b> +
-<b>SL/TP dinámico automático → Alpaca Paper</b>
-</div>""",unsafe_allow_html=True)
-st.markdown('<hr class="n">',unsafe_allow_html=True)
+st.markdown('<hr class="n">', unsafe_allow_html=True)
 
-# ══════════════════════════════════════════════════════════════
+# ─────────────────────────────────────────────────────────────────────
 #  BARRA LATERAL
-# ══════════════════════════════════════════════════════════════
+# ─────────────────────────────────────────────────────────────────────
 with st.sidebar:
-    st.markdown("### ⚙️ CONFIGURACIÓN")
-    precio_min_f=st.number_input("Precio Mín $",value=0.05,step=0.05,min_value=0.01)
-    precio_max_f=st.number_input("Precio Máx $",value=500.0,step=10.0)
-    st.markdown("**⚡ Motor de Aceleración**")
-    dflt_rv=1.2 if SESSION in("PRE-MARKET","AFTER-HOURS","CERRADO") else 1.5
-    dflt_vl=0.05 if SESSION in("PRE-MARKET","AFTER-HOURS","CERRADO") else 0.10
-    rvol_min=st.slider("RVOL mínimo",1.0,15.0,dflt_rv,0.1)
-    vel_min =st.slider("Velocidad mín %/vela",0.0,3.0,dflt_vl,0.01)
-    st.markdown("**📊 Supertrend**")
-    st_per =st.slider("Período",5,20,10,1)
-    st_mult=st.slider("Multiplicador ATR",1.0,5.0,3.0,0.5)
-    st.markdown("**🔥 Detector 5min**")
-    min_chg5=st.slider("Δ% mínimo para 5min",0.5,10.0,2.0,0.5)
-    n_prefiltro=st.slider("Candidatos del pre-filtro",100,500,250,50,
-                          help="De los 5,000+ stocks, cuántos pasar al escaneo 1min")
-    top_n_f=st.slider("Resultados finales",10,80,50,5)
-    st.markdown("**🔒 SL / TP**")
-    atr_sl=st.slider("ATR × Stop Loss",0.5,5.0,2.0,0.5)
-    atr_tp=st.slider("ATR × Take Profit",1.0,8.0,4.0,0.5)
-    st.markdown("---")
-    tickers_extra=st.text_area("Tickers extra (manual)",
-                                "SDOT,BLZE,CLRB,STRL,BIYA,JLHL,NXTS,MRDN",height=55)
-    st.markdown("---")
-    modo_auto=st.toggle("🤖 Auto-Trade",value=False)
-    if modo_auto:
-        auto_score=st.slider("Score mín",6,10,7)
-        auto_qty=st.number_input("Acciones/orden",value=1,min_value=1)
-        max_pos=st.number_input("Máx posiciones",value=3,min_value=1)
-        st.warning("⚠️ Ejecuta órdenes en Paper.")
-    auto_ref=st.toggle("🔁 Auto-escaneo",value=False)
-    ref_seg=45 if SESSION=="REGULAR" else 60
+    st.markdown("### ⚙️ CONFIGURACIÓN V99")
 
-# ══════════════════════════════════════════════════════════════
-#  ESTADO
-# ══════════════════════════════════════════════════════════════
-for k,v in [("universo",RESPALDO),("yahoo_data",{}),
-            ("prefiltro_df",pd.DataFrame()),
-            ("candidatos",{}),("df_scan",pd.DataFrame()),
-            ("last_scan",None),("last_yahoo",None),
-            ("last_prefiltro",None)]:
+    st.markdown("**💰 Filtros de Precio**")
+    precio_min_f = st.number_input("Precio Mín $", value=0.01, step=0.01, min_value=0.01)
+    precio_max_f = st.number_input("Precio Máx $", value=600.0, step=10.0, max_value=600.0)
+
+    st.markdown("**🚨 Detector de Despegue (WebSocket)**")
+    min_spike = st.slider("Spike mínimo %/vela", 0.5, 15.0, 2.0, 0.5,
+                           help="% subida mínima en 1 vela de 1min para trigger")
+    min_rvol  = st.slider("RVOL mínimo", 1.0, 10.0, 2.5, 0.5,
+                           help="Volumen relativo mínimo (2.5 = 2.5x el promedio)")
+    min_force = st.slider("Force mínimo para alerta", 40, 95, 65, 5,
+                           help="Force Meter mínimo para generar ALERTA ROJA")
+
+    st.markdown("**📊 SuperTrend**")
+    st_per  = st.slider("Período", 5, 20, 10, 1)
+    st_mult = st.slider("Multiplicador ATR", 1.0, 5.0, 3.0, 0.5)
+
+    st.markdown("**🔒 Gestión de Riesgo**")
+    atr_mult = st.slider("ATR × Stop Loss", 0.5, 4.0, 2.0, 0.5)
+    min_rr   = st.slider("R:R mínimo", 1.5, 4.0, 2.0, 0.5)
+
+    st.markdown("**📋 Resultados**")
+    n_gainers = st.slider("Top Gainers a monitorear", 10, 100, 50, 5)
+    top_n_f   = st.slider("Resultados finales", 10, 60, 30, 5)
+
+    st.markdown("---")
+    extras_txt = st.text_area("Tickers extra",
+                               "PHOE,SDOT,BLZE,CLRB,STRL,BIYA,JLHL,NXTS", height=50)
+
+    st.markdown("---")
+    auto_compra = st.toggle("🤖 Auto-Compra (Force ≥ umbral)", value=False)
+    if auto_compra:
+        auto_force = st.slider("Force mínimo auto-compra", 70, 100, 80)
+        auto_qty   = st.number_input("Acciones/orden", value=1, min_value=1)
+        max_pos    = st.number_input("Máx posiciones", value=3, min_value=1)
+        st.warning("⚠️ Ejecuta órdenes LIMIT en Paper.")
+
+    auto_ref = st.toggle("🔁 Auto-refresh UI (10 seg)", value=True)
+
+# Actualizar config dinámica en shared_state
+# Los sliders de Streamlit alimentan el WebSocket en tiempo real
+with _lock:
+    shared_state["cfg"] = {
+        "min_spike_pct": min_spike,
+        "min_rvol"     : min_rvol,
+        "min_force"    : min_force,
+        "precio_min"   : precio_min_f,
+        "precio_max"   : precio_max_f,
+    }
+
+# ─────────────────────────────────────────────────────────────────────
+#  ESTADO DE LA SESIÓN
+# ─────────────────────────────────────────────────────────────────────
+for k,v in [("gainers_df", pd.DataFrame()),
+             ("ws_started", False),
+             ("last_refresh", None)]:
     if k not in st.session_state:
-        st.session_state[k]=v
+        st.session_state[k] = v
 
-# ══════════════════════════════════════════════════════════════
-#  PASO 1: CARGAR UNIVERSO COMPLETO
-# ══════════════════════════════════════════════════════════════
-st.subheader("📡 Paso 1 — Universo Completo NYSE+NASDAQ+AMEX (Twelve Data)")
+extras = [x.strip().upper() for x in extras_txt.split(",") if x.strip()]
 
-p1a,p1b,p1c=st.columns([2,1,1])
-with p1a:
-    if st.button("🌐 CARGAR UNIVERSO COMPLETO (5,000+ acciones)",use_container_width=True):
-        with st.spinner("🌐 Cargando universo via Twelve Data..."):
-            u=cargar_universo_twelve()
-            st.session_state.universo=u
-            st.session_state.prefiltro_df=pd.DataFrame()
-            st.session_state.candidatos={}
-        if len(u)>500:
-            st.success(f"✅ {len(u):,} acciones cargadas (NYSE+NASDAQ+AMEX)")
+# ─────────────────────────────────────────────────────────────────────
+#  PASO 1: OBTENER TOP GAINERS + INICIAR WEBSOCKET
+# ─────────────────────────────────────────────────────────────────────
+st.subheader("📡 Paso 1 — Obtener Top Movers + Iniciar WebSocket")
+
+st.markdown("""<div class="ibox">
+<b style="color:#ff4500">Cómo funciona:</b>
+Obtiene los top gainers del día (Yahoo Finance) → suscribe SOLO esos ~50 tickers
+al WebSocket de Alpaca → recibe datos tick-by-tick en background →
+detecta spikes en el segundo exacto (PHOE y similares).
+</div>""", unsafe_allow_html=True)
+
+c1a, c1b, c1c = st.columns([2, 1, 1])
+with c1a:
+    if st.button("🚀 OBTENER TOP GAINERS + ACTIVAR WEBSOCKET",
+                 use_container_width=True):
+        with st.spinner("📡 Obteniendo top gainers..."):
+            df_g = obtener_top_gainers(precio_min_f, precio_max_f, n_gainers)
+            # Añadir extras manuales
+            if extras:
+                ex_df = pd.DataFrame([{
+                    "Ticker":t,"Precio $":0,"Δ Día %":0,"Vol":0
+                } for t in extras if not df_g.empty and t not in df_g["Ticker"].tolist()])
+                if not ex_df.empty:
+                    df_g = pd.concat([df_g, ex_df], ignore_index=True)
+            st.session_state.gainers_df = df_g
+
+        if not df_g.empty:
+            tickers_ws = df_g["Ticker"].tolist()[:60]  # máx 60 por IEX free
+
+            # Iniciar WebSocket en hilo de background
+            ws_manager.start(tickers_ws)
+            st.session_state.ws_started = True
+
+            st.success(
+                f"✅ {len(df_g)} stocks obtenidos | "
+                f"WebSocket suscrito a {len(tickers_ws)} tickers | "
+                f"Escuchando tick-by-tick..."
+            )
+            # Toast de confirmación
+            st.toast("🟢 WebSocket Alpaca ACTIVO — Escaneando tickers",
+                     icon="⚡")
         else:
-            st.warning(f"⚠️ Solo {len(u)} tickers. Usando lista respaldo.")
-with p1b:
-    n_u=len(st.session_state.universo)
-    c_u="#00ff88" if n_u>500 else "#ffc107"
-    st.markdown(f'<span style="color:{c_u}">📊 {n_u:,} stocks</span>',unsafe_allow_html=True)
-with p1c:
-    if st.button("ℹ️ Usar respaldo",use_container_width=True):
-        st.session_state.universo=RESPALDO
-        st.rerun()
+            st.error("❌ Sin datos. Verifica conexión.")
 
-# Añadir extras manuales al universo
-extras=[x.strip().upper() for x in tickers_extra.split(",") if x.strip()]
-universo_final=list(dict.fromkeys(st.session_state.universo+extras))
-
-st.markdown('<hr class="n">',unsafe_allow_html=True)
-
-# ══════════════════════════════════════════════════════════════
-#  PASO 2: YAHOO FINANCE TOP GAINERS
-# ══════════════════════════════════════════════════════════════
-st.subheader("🏆 Paso 2 — Top Gainers Yahoo Finance (tiempo real)")
-
-p2a,p2b=st.columns([3,1])
-with p2a:
-    if st.button("🏆 OBTENER TOP GAINERS YAHOO (= Webull Top Gainers)",use_container_width=True):
-        with st.spinner("🏆 Conectando a Yahoo Finance..."):
-            yd=obtener_yahoo_gainers()
-            st.session_state.yahoo_data=yd
-            st.session_state.last_yahoo=time.time()
-        c1_,c2_,c3_=st.columns(3)
-        c1_.markdown(f'<span style="color:{"#00ff88" if yd["n_day"]>0 else "#ff4444"}">'
-                     f'{"✅" if yd["n_day"]>0 else "❌"} Día: {yd["n_day"]}</span>',
-                     unsafe_allow_html=True)
-        c2_.markdown(f'<span style="color:{"#00ff88" if yd["n_active"]>0 else "#ff4444"}">'
-                     f'{"✅" if yd["n_active"]>0 else "❌"} Activos: {yd["n_active"]}</span>',
-                     unsafe_allow_html=True)
-        c3_.markdown(f'<span style="color:{"#00ff88" if yd["n_small"]>0 else "#ff4444"}">'
-                     f'{"✅" if yd["n_small"]>0 else "❌"} Small: {yd["n_small"]}</span>',
-                     unsafe_allow_html=True)
-        if yd["n_total"]>0:
-            st.success(f"✅ {yd['n_total']} stocks de Yahoo Finance obtenidos")
-        else:
-            st.warning("⚠️ Yahoo no respondió. El universo completo se usará igualmente.")
-with p2b:
-    n_yd=len(st.session_state.yahoo_data.get("todos",[]))
-    ts_y=""
-    if st.session_state.last_yahoo:
-        ts_y=datetime.fromtimestamp(st.session_state.last_yahoo)\
-                     .astimezone(tz_et).strftime("%H:%M ET")
-    col_y="#00ff88" if n_yd>0 else "#8b949e"
-    st.markdown(f'<span style="color:{col_y}">🏆 {n_yd} | {ts_y}</span>',unsafe_allow_html=True)
-
-if st.session_state.yahoo_data.get("todos"):
-    yt=st.session_state.yahoo_data["todos"]
-    st.markdown(f'<div class="ibox" style="color:#00ff88">'
-                f'<b>Yahoo Top:</b> {" · ".join(yt[:30])}{"..." if len(yt)>30 else ""}</div>',
+with c1b:
+    ws_st = shared_state.get("ws_status","DESCONECTADO")
+    ws_css = "ws-live" if "🟢" in ws_st else ("ws-conn" if "CONECT" in ws_st else "ws-off")
+    st.markdown(f'<span class="{ws_css}">● {ws_st}</span>', unsafe_allow_html=True)
+    n_ws_tk = len(shared_state.get("ws_tickers",[]))
+    st.markdown(f'<span style="color:#8b949e;font-size:.72em">{n_ws_tk} tickers</span>',
                 unsafe_allow_html=True)
 
-st.markdown('<hr class="n">',unsafe_allow_html=True)
+with c1c:
+    trades_rx = shared_state.get("ws_trades",0)
+    last_tick = shared_state.get("ws_last_tick")
+    ts_tick   = last_tick.strftime("%H:%M:%S") if last_tick else "—"
+    st.markdown(f'<span style="color:#ffc107">{trades_rx:,} ticks</span>', unsafe_allow_html=True)
+    st.markdown(f'<span style="color:#8b949e;font-size:.72em">Último: {ts_tick}</span>',
+                unsafe_allow_html=True)
 
-# ══════════════════════════════════════════════════════════════
-#  PASO 3: PRE-FILTRO 5min SOBRE TODO EL UNIVERSO
-# ══════════════════════════════════════════════════════════════
-st.subheader("🔥 Paso 3 — Pre-filtro 5min sobre todo el universo (como Webull 5min)")
-
-p3a,p3b=st.columns([3,1])
-with p3a:
-    if st.button(f"🔥 DETECTAR MOMENTUM 5MIN ({len(universo_final):,} stocks)",
-                 use_container_width=True):
-        st.markdown(f"**Analizando {len(universo_final):,} acciones con datos de 5min...**")
-        df_pf=prefiltro_5min(universo_final,precio_min_f,precio_max_f,n_prefiltro)
-        st.session_state.prefiltro_df=df_pf
-        st.session_state.last_prefiltro=time.time()
-        if not df_pf.empty:
-            st.success(f"✅ {len(df_pf)} candidatos con momentum activo")
-        else:
-            st.warning("⚠️ Sin candidatos. Baja el umbral de precio o amplía el rango.")
-with p3b:
-    n_pf=len(st.session_state.prefiltro_df)
-    ts_pf=""
-    if st.session_state.last_prefiltro:
-        ts_pf=datetime.fromtimestamp(st.session_state.last_prefiltro)\
-                      .astimezone(tz_et).strftime("%H:%M ET")
-    col_pf="#ff4500" if n_pf>0 else "#8b949e"
-    st.markdown(f'<span style="color:{col_pf}">🔥 {n_pf} | {ts_pf}</span>',unsafe_allow_html=True)
-
-# Mostrar tabla pre-filtro
-chg5_map={}
-if not st.session_state.prefiltro_df.empty:
-    pf=st.session_state.prefiltro_df
-    for _,row in pf.iterrows():
-        chg5_map[row["Ticker"]]=float(row["Δ 5min %"])
-
-    cols_pf=["Ticker","Precio $","Δ 5min %","Δ 10min %","Δ Reciente%","RVOL 5m","Acel","Score"]
-    pf_sh=pf[cols_pf].head(20).copy()
-    def cd5(v): return f"color:{'#00ff88' if v>=0 else '#ff4444'};font-weight:bold"
-    def cr5(v):
-        if v>=5: return "color:#ff4500;font-weight:900"
-        elif v>=3: return "color:#ff8c00;font-weight:700"
-        elif v>=2: return "color:#ffc107;font-weight:bold"
-        else: return "color:#8b949e"
-    fmt5={"Precio $":"${:.4f}","Δ 5min %":"{:+.2f}%","Δ 10min %":"{:+.2f}%",
-          "Δ Reciente%":"{:+.2f}%","RVOL 5m":"{:.1f}x","Score":"{:.1f}"}
+# Mostrar gainers
+if not st.session_state.gainers_df.empty:
+    df_g_sh = st.session_state.gainers_df.head(15).copy()
+    cols_g  = [c for c in ["Ticker","Precio $","Δ Día %","Vol"] if c in df_g_sh.columns]
+    def cdg(v): return f"color:{'#00ff88' if v>=0 else '#ff4444'};font-weight:bold"
     try:
-        st5=(pf_sh.style.map(cd5,subset=["Δ 5min %","Δ 10min %","Δ Reciente%"])
-             .map(cr5,subset=["RVOL 5m"]).format(fmt5))
+        sg = df_g_sh[cols_g].style.map(cdg,subset=["Δ Día %"])\
+               .format({"Precio $":"${:.4f}","Δ Día %":"{:+.2f}%","Vol":"{:,.0f}"})
     except Exception:
+        sg = df_g_sh[cols_g].style
+    st.dataframe(sg, use_container_width=True, hide_index=True, height=220)
+
+st.markdown('<hr class="n">', unsafe_allow_html=True)
+
+# ─────────────────────────────────────────────────────────────────────
+#  AUDIO TRIGGER — activa el pitido si hay nueva alerta
+# ─────────────────────────────────────────────────────────────────────
+if shared_state.get("nueva_alerta"):
+    st.markdown("""
+    <script>
+    const el = document.getElementById('spike-trigger');
+    if(el){ el.dataset.trigger='1'; }
+    </script>
+    """, unsafe_allow_html=True)
+    with _lock:
+        shared_state["nueva_alerta"] = False
+
+# ─────────────────────────────────────────────────────────────────────
+#  PASO 2: ALERTAS ROJAS — DESPEGUES EN TIEMPO REAL
+# ─────────────────────────────────────────────────────────────────────
+with _lock:
+    alertas_now = list(shared_state["alertas"])
+
+st.subheader(f"🚨 Alertas de Despegue en Tiempo Real ({len(alertas_now)} activas)")
+
+if alertas_now:
+    for al in alertas_now[:8]:
+        force  = al["force"]
+        fb     = force_bar(force, True)
+        det_tx = " | ".join([f"<b>{k}</b>: {v}"
+                              for k,v in list(al["detalles"].items())[:4]])
+        st.markdown(f"""
+        <div class="alerta-roja">
+          <span class="tkr">🚨 {al['ticker']}</span>
+          &nbsp;&nbsp;
+          <span style="color:#ff4500;font-size:1.7em;font-weight:900;
+                font-family:'Orbitron',sans-serif">{force}/100</span>
+          &nbsp;&nbsp;
+          <span style="color:#ffc107;font-size:.82em">{al['ts']}</span>
+          <br>
+          {fb}
+          <br>
+          <span class="lbl">Precio</span> <b style="color:#fff">${al['precio']:.4f}</b>
+          &nbsp;|&nbsp;
+          <span class="lbl">🚨 Spike 1m</span>
+          <b style="color:#ff4500">{al['spike_1m']:+.2f}%</b>
+          &nbsp;|&nbsp;
+          <span class="lbl">Vel 1min</span>
+          <b style="color:#ff8c00">{al['vel_1m']:+.2f}%</b>
+          &nbsp;|&nbsp;
+          <span class="lbl">Vel 5min</span>
+          <b style="color:#ffc107">{al['vel_5m']:+.2f}%</b>
+          &nbsp;|&nbsp;
+          <span class="lbl">RVOL</span>
+          <b style="color:#ff8c00">{al['rvol']:.1f}x</b>
+          &nbsp;|&nbsp;
+          <span class="lbl">Ticks/s</span> {al['tps']:.1f}
+          <br>
+          <span style="font-size:.75em;color:#8b949e">{det_tx}</span>
+        </div>""", unsafe_allow_html=True)
+
+    # Toast si hay alertas recientes
+    if alertas_now and st.session_state.get("last_refresh"):
+        ultimo = alertas_now[0]
+        st.toast(
+            f"🚨 {ultimo['ticker']} — Force {ultimo['force']}/100 | "
+            f"Spike +{ultimo['spike_1m']:.2f}% | RVOL {ultimo['rvol']:.1f}x",
+            icon="🔥"
+        )
+else:
+    if st.session_state.ws_started:
+        st.markdown("""<div class="ibox">
+        <span style="color:#8b949e">
+        🟡 WebSocket activo — esperando despegues...<br>
+        Los spikes aparecerán aquí en el segundo exacto en que ocurran.
+        Aumenta el <b>n° de tickers</b> o baja el <b>Force mínimo</b> si no hay alertas.
+        </span></div>""", unsafe_allow_html=True)
+    else:
+        st.info("Activa el WebSocket en el Paso 1 para ver alertas en tiempo real.")
+
+st.markdown('<hr class="n">', unsafe_allow_html=True)
+
+# ─────────────────────────────────────────────────────────────────────
+#  PASO 3: MONITOR EN TIEMPO REAL — todos los tickers
+# ─────────────────────────────────────────────────────────────────────
+st.subheader("📊 Paso 3 — Monitor de Velocidad en Tiempo Real (Rolling 5min)")
+
+with _lock:
+    prices_now = dict(shared_state["prices"])
+    tickers_ws = list(shared_state["ws_tickers"])
+
+if prices_now:
+    monitor_rows = []
+    for sym in tickers_ws:
+        precio = prices_now.get(sym, 0)
+        if precio <= 0:
+            continue
+        ev = evaluar_despegue(sym)
+        if ev["force"] < 10:
+            continue
+
+        orden = calcular_sltp(
+            precio,
+            precio * 1.001,
+            shared_state["bars"].get(sym, []),
+            atr_mult, min_rr
+        )
+
+        monitor_rows.append({
+            "Ticker"   : sym,
+            "Precio $" : round(precio, 4),
+            "Force"    : ev["force"],
+            "🚨 Despegue": "🚨 SÍ" if ev["despegue"] else "—",
+            "Spike 1m %": round(ev["spike_1m"], 2),
+            "Vel 1min %": round(ev["vel_1m"],   2),
+            "Vel 5min %": round(ev["vel_5m"],   2),
+            "RVOL"      : round(ev["rvol"],      1),
+            "Ticks/s"   : round(ev["tps"],       1),
+            "Entrada $" : orden["entrada"],
+            "SL $"      : orden["sl"],
+            "TP $"      : orden["tp"],
+            "R:R"       : orden["rr"],
+            "_force"    : ev["force"],
+            "_despegue" : ev["despegue"],
+            "_det"      : ev["detalles"],
+        })
+
+    if monitor_rows:
+        monitor_rows.sort(key=lambda x: -x["_force"])
+
+        # Mostrar tarjetas de los top 5
+        top5 = [r for r in monitor_rows if r["_force"] >= min_force][:5]
+        if top5:
+            st.markdown(f"**⚡ Top señales activas (Force ≥ {min_force}):**")
+            for r in top5:
+                force  = r["_force"]
+                dep    = r["_despegue"]
+                fb     = force_bar(force, dep)
+                card   = "card-spike" if dep else "card-launch"
+                vc     = "#00ff88" if r["Vel 1min %"]>=0 else "#ff4444"
+                sc     = "#ff4500" if r["Spike 1m %"]>=5 else "#ff8c00"
+                st.markdown(f"""
+                <div class="{card}">
+                  <span class="tkr">{'🚨' if dep else '⚡'} {r['Ticker']}</span>
+                  &nbsp;&nbsp;
+                  <span class="{'s10' if force>=80 else ('s8' if force>=60 else 's6')}">{force}/100</span>
+                  {'<span class="despegue-badge">DESPEGUE INMINENTE</span>' if dep else ''}
+                  <br>{fb}<br>
+                  <span class="lbl">Precio</span> <b style="color:#fff">${r['Precio $']:.4f}</b>
+                  &nbsp;|&nbsp;
+                  <span class="lbl">Spike 1m</span> <b style="color:{sc}">{r['Spike 1m %']:+.2f}%</b>
+                  &nbsp;|&nbsp;
+                  <span class="lbl">Vel 1min</span> <b style="color:{vc}">{r['Vel 1min %']:+.2f}%</b>
+                  &nbsp;|&nbsp;
+                  <span class="lbl">Vel 5min</span> <b style="color:{vc}">{r['Vel 5min %']:+.2f}%</b>
+                  &nbsp;|&nbsp;
+                  <span class="lbl">RVOL</span> {r['RVOL']}x
+                  &nbsp;|&nbsp;
+                  <span class="lbl">Ticks/s</span> {r['Ticks/s']}
+                  <br>
+                  <span class="lbl">SL</span> <b style="color:#ff6b6b">${r['SL $']}</b>
+                  &nbsp;|&nbsp;
+                  <span class="lbl">TP</span> <b style="color:#00ff88">${r['TP $']}</b>
+                  &nbsp;|&nbsp;
+                  <span class="lbl">R:R</span> 1:{r['R:R']}
+                </div>""", unsafe_allow_html=True)
+
+                # Auto-compra si está activada
+                if auto_compra and dep and force >= auto_force:
+                    n_pos = len(get_positions())
+                    if n_pos < max_pos:
+                        ok, msg = execute_limit_buy(
+                            r["Ticker"], auto_qty,
+                            r["Entrada $"], r["SL $"], r["TP $"])
+                        st.write(msg)
+
+        # Tabla completa
+        cols_t = ["Ticker","Precio $","Force","🚨 Despegue",
+                  "Spike 1m %","Vel 1min %","Vel 5min %",
+                  "RVOL","Ticks/s","Entrada $","SL $","TP $","R:R"]
+        df_mon = pd.DataFrame([{k:r[k] for k in cols_t} for r in monitor_rows])
+
+        def cf(v):
+            if v>=80: return "background-color:#7f1d1d;color:#ff4500;font-weight:900"
+            elif v>=60: return "background-color:#92400e;color:#ffc107"
+            elif v>=40: return "background-color:#1a2535;color:#c9d1d9"
+            else: return "color:#8b949e"
+        def cvt(v): return f"color:{'#00ff88' if v>=0 else '#ff4444'};font-weight:bold"
+        def csp(v):
+            if v>=5:  return "color:#ff4500;font-weight:900"
+            elif v>=2:return "color:#ff8c00;font-weight:700"
+            elif v>=0.5:return"color:#ffc107"
+            else: return "color:#8b949e"
+        fmt_m = {"Precio $":"${:.4f}","Spike 1m %":"{:+.2f}%","Vel 1min %":"{:+.2f}%",
+                  "Vel 5min %":"{:+.2f}%","RVOL":"{:.1f}x","Ticks/s":"{:.1f}",
+                  "Entrada $":"${:.4f}","SL $":"${:.4f}","TP $":"${:.4f}","R:R":"{:.2f}"}
         try:
-            st5=(pf_sh.style.applymap(cd5,subset=["Δ 5min %","Δ 10min %","Δ Reciente%"])
-                 .applymap(cr5,subset=["RVOL 5m"]).format(fmt5))
+            styled=(df_mon.style.map(cf,subset=["Force"])
+                    .map(cvt,subset=["Vel 1min %","Vel 5min %"])
+                    .map(csp,subset=["Spike 1m %"]).format(fmt_m))
         except Exception:
-            st5=pf_sh.style.format(fmt5)
-    st.dataframe(st5,use_container_width=True,hide_index=True,height=280)
+            try:
+                styled=(df_mon.style.applymap(cf,subset=["Force"])
+                        .applymap(cvt,subset=["Vel 1min %","Vel 5min %"])
+                        .applymap(csp,subset=["Spike 1m %"]).format(fmt_m))
+            except Exception:
+                styled=df_mon.style.format(fmt_m)
+        st.dataframe(styled, use_container_width=True, hide_index=True, height=400)
+    else:
+        st.info("Los tickers suscritos aparecerán aquí cuando haya actividad de precio.")
+else:
+    if st.session_state.ws_started:
+        st.markdown("""<div class="ibox">
+        🟡 Esperando primeros datos del WebSocket...
+        Los datos aparecerán en segundos cuando Alpaca empiece a enviar ticks.
+        </div>""", unsafe_allow_html=True)
+    else:
+        st.info("Activa el WebSocket en el Paso 1 para ver el monitor en tiempo real.")
 
-st.markdown('<hr class="n">',unsafe_allow_html=True)
+st.markdown('<hr class="n">', unsafe_allow_html=True)
 
-# ══════════════════════════════════════════════════════════════
-#  CONSTRUIR CANDIDATOS COMBINADOS
-# ══════════════════════════════════════════════════════════════
-def construir_candidatos():
-    """
-    Combina Yahoo Top Gainers + Pre-filtro 5min + Universo.
-    Retorna dict: {ticker: {"cambio_dia":float, "es_yahoo":bool, "chg_5m":float}}
-    """
-    cands={}
-
-    # Yahoo top gainers (prioridad 1)
-    for t in st.session_state.yahoo_data.get("todos",[]):
-        cands[t]={"cambio_dia":0.0,"es_yahoo":True,"chg_5m":chg5_map.get(t,0.0)}
-
-    # Pre-filtro 5min (prioridad 2)
-    if not st.session_state.prefiltro_df.empty:
-        for _,row in st.session_state.prefiltro_df.iterrows():
-            t=row["Ticker"]
-            if t not in cands:
-                cands[t]={"cambio_dia":0.0,"es_yahoo":False,"chg_5m":float(row["Δ 5min %"])}
-            else:
-                cands[t]["chg_5m"]=float(row["Δ 5min %"])
-
-    # Extras manuales
-    for t in extras:
-        if t not in cands:
-            cands[t]={"cambio_dia":0.0,"es_yahoo":False,"chg_5m":chg5_map.get(t,0.0)}
-
-    # Si hay muy pocos candidatos, añadir del universo completo
-    if len(cands) < 50:
-        for t in universo_final[:200]:
-            if t not in cands:
-                cands[t]={"cambio_dia":0.0,"es_yahoo":False,"chg_5m":0.0}
-
-    return cands
-
-# ══════════════════════════════════════════════════════════════
-#  PORTAFOLIO
-# ══════════════════════════════════════════════════════════════
-st.subheader("💼 Portafolio Activo — P&L en Tiempo Real")
-posiciones=get_pos()
+# ─────────────────────────────────────────────────────────────────────
+#  PORTAFOLIO ACTIVO
+# ─────────────────────────────────────────────────────────────────────
+st.subheader("💼 Portafolio Activo")
+posiciones = get_positions()
 if posiciones:
-    rows=[]
+    rows = []
     for p in posiciones:
-        pp=float(p.unrealized_plpc)*100; pu=float(p.unrealized_pl)
-        ico="🟢" if pp>=0 else "🔴"
+        pp = float(p.unrealized_plpc)*100
+        pu = float(p.unrealized_pl)
+        ico = "🟢" if pp>=0 else "🔴"
         rows.append({"Ticker":p.symbol,"Qty":p.qty,
                      "Entrada $":round(float(p.avg_entry_price),4),
                      "Actual $": round(float(p.current_price),4),
                      "P&L %":f"{ico} {pp:+.2f}%","P&L $":f"${pu:+.2f}",
                      "Valor $":f"${float(p.market_value):,.2f}"})
-    st.dataframe(pd.DataFrame(rows),use_container_width=True,hide_index=True)
-    px1,px2,px3=st.columns([2,1,1])
-    with px1: tc=st.selectbox("Ticker a cerrar",[r["Ticker"] for r in rows])
+    st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+    px1,px2,px3 = st.columns([2,1,1])
+    with px1:
+        tickers_pos = [r["Ticker"] for r in rows]
+        tc = st.selectbox("Cerrar", tickers_pos)
     with px2:
         if st.button("🔴 Cerrar pos."):
-            ok,msg=cerrar(tc); st.success(msg) if ok else st.error(msg)
+            ok,msg = execute_market_sell(tc, int([r["Qty"] for r in rows if r["Ticker"]==tc][0]))
+            st.success(msg) if ok else st.error(msg)
     with px3:
         if st.button("🔴 Cerrar TODO"):
-            [cerrar(p.symbol) for p in posiciones]; st.warning("Cerrando...")
+            for pos in posiciones:
+                execute_market_sell(pos.symbol, int(pos.qty))
+            st.warning("Cerrando todo...")
 else:
-    st.info("Sin posiciones. ¡Detecta el despegue! 🚀")
+    st.info("Sin posiciones abiertas. 🎯")
 
-st.markdown('<hr class="n">',unsafe_allow_html=True)
+st.markdown('<hr class="n">', unsafe_allow_html=True)
 
-# ══════════════════════════════════════════════════════════════
-#  PASO 4: ESCANEO FINAL 1min
-# ══════════════════════════════════════════════════════════════
-st.subheader("🔭 Paso 4 — Motor de Señal 1min (Supertrend + RVOL + Aceleración)")
+# ─────────────────────────────────────────────────────────────────────
+#  EJECUCIÓN MANUAL
+# ─────────────────────────────────────────────────────────────────────
+st.subheader("🛒 Ejecución Manual — Limit Order (Ask + 0.5%)")
 
-candidatos=construir_candidatos()
-n_cands=len(candidatos)
-n_yahoo_c=sum(1 for v in candidatos.values() if v.get("es_yahoo"))
-n_5m_c=sum(1 for v in candidatos.values() if v.get("chg_5m",0)>=2)
+tickers_disponibles = (
+    list(prices_now.keys()) if prices_now
+    else (st.session_state.gainers_df["Ticker"].tolist()
+          if not st.session_state.gainers_df.empty else [])
+)
 
-sb1,sb2,sb3=st.columns([2,1,1])
-with sb1:
-    iniciar=st.button(f"🚀 INICIAR ESCANEO FINAL ({n_cands} candidatos)",
-                      use_container_width=True)
-with sb2:
-    if st.button("🔄 Refresh UI",use_container_width=True): st.rerun()
-with sb3:
-    if st.session_state.last_scan:
-        ts_s=datetime.fromtimestamp(st.session_state.last_scan)\
-                     .astimezone(tz_et).strftime("%H:%M:%S ET")
-        st.markdown(f'<span style="color:#8b949e;font-size:.73em">Último:{ts_s}</span>',
-                    unsafe_allow_html=True)
+if tickers_disponibles:
+    em1, em2 = st.columns([1, 2])
+    with em1:
+        t_op   = st.selectbox("Ticker", tickers_disponibles)
+        precio_op = prices_now.get(t_op, 0)
+        bars_op   = shared_state["bars"].get(t_op, [])
+        orden_op  = calcular_sltp(precio_op, precio_op*1.001, bars_op, atr_mult, min_rr)
 
-st.markdown(f"⚡ **{n_cands} candidatos** | "
-            f"🏆 {n_yahoo_c} Yahoo | 🔥 {n_5m_c} con 5min activo | "
-            f"Sesión: **{SESSION}** | RVOL≥{rvol_min}x | Vel≥{vel_min}%")
+        if precio_op > 0:
+            st.markdown(f'<div class="ibox">Precio actual (WebSocket): '
+                        f'<b style="color:#00ff88">${precio_op:.4f}</b></div>',
+                        unsafe_allow_html=True)
 
-debe=(iniciar or
-      (auto_ref and st.session_state.last_scan is not None and
-       (time.time()-st.session_state.last_scan)>=ref_seg))
-
-if debe:
-    if not candidatos:
-        st.error("❌ Sin candidatos. Completa los pasos 1, 2 y 3 primero.")
-    else:
-        with st.spinner("⚡ Motor de señal corriendo..."):
-            df_scan=escanear_1min(
-                candidatos,precio_min_f,precio_max_f,
-                rvol_min,vel_min,atr_sl,atr_tp,
-                SESSION,st_per,st_mult,top_n_f)
-        st.session_state.df_scan=df_scan
-        st.session_state.last_scan=time.time()
-        ts_ok=datetime.now(tz_et).strftime("%H:%M:%S ET")
-        n=len(df_scan)
-        if n>0:
-            ny=len(df_scan[df_scan["Fuente"].str.contains("Yahoo",na=False)])
-            n5=len(df_scan[df_scan["Fuente"].str.contains("5min",na=False)])
-            st.success(f"✅ {ts_ok} — **{n} señales** "
-                       f"(🏆 {ny} Yahoo · 🔥 {n5} 5min · 📋 {n-ny-n5} universo)")
-        else:
-            st.warning(f"⚠️ {ts_ok} — Sin señales. "
-                       "Baja RVOL a 1.0x y Velocidad a 0.0%. "
-                       "Completa los pasos 2 y 3 para tener mejores candidatos.")
-
-df_scan=st.session_state.df_scan
-
-# ══════════════════════════════════════════════════════════════
-#  MOSTRAR RESULTADOS
-# ══════════════════════════════════════════════════════════════
-if not df_scan.empty:
-
-    despegues=df_scan[df_scan["Score 🐂"]>=7]
-    impulsos =df_scan[(df_scan["Score 🐂"]>=5)&(df_scan["Score 🐂"]<7)]
-
-    # Tarjetas de despegue
-    if not despegues.empty:
-        st.markdown(f"### 🚀 DESPEGUES — {len(despegues)} señales")
-        for _,row in despegues.iterrows():
-            s  =int(row["Score 🐂"])
-            cls="s10" if s==10 else("s8" if s>=8 else "s6")
-            rv =float(row["RVOL"])
-            vc ="#00ff88" if row["Vel 1m %"]>=0 else "#ff4444"
-            d5c="#00ff88" if row["Δ 5m %"]>=0   else "#ff4444"
-            dc ="#00ff88" if row["Δ Día %"]>=0   else "#ff4444"
-            stc="#00ff88" if "ALCISTA" in str(row["Supertrend"]) else "#ff4444"
-            fuente=str(row["Fuente"])
-            if "Yahoo" in fuente and "5min" in fuente:
-                fb='<span style="background:#7c3aed;color:#fff;padding:1px 7px;border-radius:4px;font-size:.70em">🏆🔥 Yahoo+5min</span>'
-                card="card-fire"
-            elif "Yahoo" in fuente:
-                fb='<span style="background:#1d4ed8;color:#fff;padding:1px 7px;border-radius:4px;font-size:.70em">🏆 Yahoo</span>'
-                card="card-fire"
-            elif "5min" in fuente:
-                fb='<span style="background:#b91c1c;color:#fff;padding:1px 7px;border-radius:4px;font-size:.70em">🔥 5min</span>'
-                card="card-5min"
-            else:
-                fb='<span style="background:#374151;color:#aaa;padding:1px 7px;border-radius:4px;font-size:.70em">📋 Universo</span>'
-                card="card-hot"
-            rcl=("color:#ff4500;font-weight:900" if rv>=10
-                 else("color:#ff8c00;font-weight:700" if rv>=5 else "color:#ffc107"))
-
-            st.markdown(f"""
-            <div class="{card}">
-              <span class="tkr">⚡ {row['Ticker']}</span>
-              &nbsp;{fb}
-              &nbsp;&nbsp;<span class="{cls}">{s}/10</span>
-              &nbsp;&nbsp;<span style="color:#a78bfa;font-size:.84em">{row['Señal']}</span>
-              &nbsp;&nbsp;<span style="color:{stc};font-size:.79em">{row['Supertrend']}</span>
-              <br>
-              <span class="lbl">Precio</span> <b style="color:#fff">${row['Precio $']}</b>
-              &nbsp;|&nbsp;<span class="lbl">RVOL</span> <b style="{rcl}">{rv:.1f}x</b>
-              &nbsp;|&nbsp;<span class="lbl">Vel 1min</span> <b style="color:{vc}">{row['Vel 1m %']:+.2f}%</b>
-              &nbsp;|&nbsp;<span class="lbl">Vel 2min</span> <b style="color:{vc}">{row['Vel 2m %']:+.2f}%</b>
-              &nbsp;|&nbsp;<span class="lbl">Δ 5min</span> <b style="color:{d5c}">{row['Δ 5m %']:+.2f}%</b>
-              &nbsp;|&nbsp;<span class="lbl">Δ Día</span> <b style="color:{dc}">{row['Δ Día %']:+.2f}%</b>
-              &nbsp;|&nbsp;<span class="lbl">RSI</span> {row['RSI']}
-              &nbsp;|&nbsp;<span class="lbl">ST$</span> {row['ST $']}
-              <br>
-              <span class="lbl">SL</span> <b style="color:#ff6b6b">${row['SL $']}</b>
-              &nbsp;|&nbsp;<span class="lbl">TP</span> <b style="color:#00ff88">${row['TP $']}</b>
-              &nbsp;|&nbsp;<span class="lbl">R:R</span> {row['R:R']}x
-            </div>""",unsafe_allow_html=True)
-
-    # Impulsos
-    if not impulsos.empty:
-        with st.expander(f"👁️ IMPULSOS EN FORMACIÓN ({len(impulsos)} — score 5-6)"):
-            for _,row in impulsos.iterrows():
-                vc="#00ff88" if row["Vel 1m %"]>=0 else "#ff4444"
-                stc="#00ff88" if "ALCISTA" in str(row["Supertrend"]) else "#ff4444"
-                f_=str(row["Fuente"])
-                fb="🏆🔥" if("Yahoo" in f_ and "5min" in f_) else("🏆" if "Yahoo" in f_ else("🔥" if "5min" in f_ else "📋"))
-                st.markdown(f"""
-                <div class="card-watch">
-                  <b class="tkr" style="font-size:1.05em">{fb} {row['Ticker']}</b>
-                  &nbsp;<span class="s6">{int(row['Score 🐂'])}/10</span>
-                  &nbsp;<span style="color:#8b949e;font-size:.77em">{row['Señal']}</span>
-                  &nbsp;<span style="color:{stc};font-size:.74em">{row['Supertrend']}</span>
-                  &nbsp;|&nbsp;${row['Precio $']}
-                  &nbsp;|&nbsp;<b>RVOL</b> {row['RVOL']}x
-                  &nbsp;|&nbsp;<b style="color:{vc}">{row['Vel 1m %']:+.2f}%/min</b>
-                  &nbsp;|&nbsp;<b>Δ5m</b> {row['Δ 5m %']:+.1f}%
-                  &nbsp;|&nbsp;<b>Δ Día</b> {row['Δ Día %']:+.1f}%
-                  &nbsp;|&nbsp;<b>RSI</b> {row['RSI']}
-                  &nbsp;|&nbsp;<b style="color:#ff6b6b">SL</b>${row['SL $']}
-                  &nbsp;<b style="color:#00ff88">TP</b>${row['TP $']}
-                </div>""",unsafe_allow_html=True)
-
-    # Tabla completa
-    st.markdown("### 📋 Tabla Completa del Radar")
-    cols_t=["Ticker","Fuente","Precio $","RVOL","Vel 1m %","Vel 2m %",
-            "Δ 5m %","Acel","Supertrend","ST $","Δ Día %",
-            "Score 🐂","Score 🐻","Señal","RSI",
-            "Soporte $","Resist $","SL $","TP $","R:R"]
-    df_sh=df_scan[cols_t].copy()
-
-    def cs(v):
-        if v>=8:   return "background-color:#15803d;color:white"
-        elif v>=6: return "background-color:#1d4ed8;color:white"
-        elif v>=4: return "background-color:#92400e;color:white"
-        else:      return "background-color:#7f1d1d;color:white"
-    def cv(v): return f"color:{'#00ff88' if v>=0 else '#ff4444'};font-weight:bold"
-    def cr(v):
-        if v>=10:  return "color:#ff4500;font-weight:900"
-        elif v>=5: return "color:#ff8c00;font-weight:700"
-        elif v>=2: return "color:#ffc107;font-weight:bold"
-        else:      return "color:#8b949e"
-    fmt_t={"Precio $":"${:.4f}","RVOL":"{:.1f}x","Vel 1m %":"{:+.2f}%",
-           "Vel 2m %":"{:+.2f}%","Δ 5m %":"{:+.2f}%","Acel":"{:+.3f}",
-           "ST $":"${:.4f}","Δ Día %":"{:+.2f}%","RSI":"{:.1f}",
-           "Soporte $":"${:.4f}","Resist $":"${:.4f}",
-           "SL $":"${:.4f}","TP $":"${:.4f}","R:R":"{:.2f}"}
-    try:
-        styled=(df_sh.style
-                .map(cs,subset=["Score 🐂","Score 🐻"])
-                .map(cv,subset=["Vel 1m %","Vel 2m %","Δ 5m %","Δ Día %"])
-                .map(cr,subset=["RVOL"]).format(fmt_t))
-    except Exception:
-        try:
-            styled=(df_sh.style
-                    .applymap(cs,subset=["Score 🐂","Score 🐻"])
-                    .applymap(cv,subset=["Vel 1m %","Vel 2m %","Δ 5m %","Δ Día %"])
-                    .applymap(cr,subset=["RVOL"]).format(fmt_t))
-        except Exception:
-            styled=df_sh.style.format(fmt_t)
-    st.dataframe(styled,use_container_width=True,hide_index=True,height=430)
-
-    # Auto-trade
-    if modo_auto:
-        st.markdown("### 🤖 Auto-Trade")
-        np_=len(get_pos())
-        for _,row in df_scan[df_scan["Score 🐂"]>=auto_score].iterrows():
-            if np_>=max_pos: st.warning(f"Máx {max_pos} pos."); break
-            ok,msg=buy(row["Ticker"],auto_qty,row["SL $"],row["TP $"])
-            if ok: np_+=1
-            st.write(msg)
-
-    # Ejecución manual
-    st.markdown('<hr class="n">',unsafe_allow_html=True)
-    st.markdown("### 🛒 Ejecución Manual")
-    ce1,ce2=st.columns([1,2])
-    with ce1:
-        t_op=st.selectbox("Ticker",df_scan["Ticker"].tolist())
-        rsel=df_scan[df_scan["Ticker"]==t_op].iloc[0]
-        qty_m=st.number_input("Cantidad",value=1,min_value=1,step=1)
-        sl_m=st.number_input("SL $",value=float(rsel["SL $"]),step=0.001,format="%.4f")
-        tp_m=st.number_input("TP $",value=float(rsel["TP $"]),step=0.001,format="%.4f")
-        b1,b2=st.columns(2)
+        qty_m   = st.number_input("Cantidad", value=1, min_value=1, step=1)
+        lim_m   = st.number_input("Precio Límite $",
+                                   value=float(orden_op["entrada"]),
+                                   step=0.001, format="%.4f")
+        sl_m    = st.number_input("Stop Loss $",
+                                   value=float(orden_op["sl"]),
+                                   step=0.001, format="%.4f")
+        tp_m    = st.number_input("Take Profit $",
+                                   value=float(orden_op["tp"]),
+                                   step=0.001, format="%.4f")
+        b1, b2  = st.columns(2)
         with b1:
-            if st.button("🟢 COMPRAR",use_container_width=True):
-                ok,msg=buy(t_op,qty_m,sl_m,tp_m); st.success(msg) if ok else st.error(msg)
+            if st.button("🟢 LIMIT BUY", use_container_width=True):
+                ok,msg = execute_limit_buy(t_op, qty_m, lim_m, sl_m, tp_m)
+                st.success(msg) if ok else st.error(msg)
         with b2:
-            if st.button("🔴 VENDER",use_container_width=True):
-                ok,msg=sell(t_op,qty_m); st.success(msg) if ok else st.error(msg)
-    with ce2:
-        st.markdown(f"### 📊 {t_op}")
-        stc2="#00ff88" if "ALCISTA" in str(rsel["Supertrend"]) else "#ff4444"
-        st.markdown(f'<b style="color:{stc2}">{rsel["Supertrend"]}</b> — ST: <b>${rsel["ST $"]}</b>',
-                    unsafe_allow_html=True)
-        m1,m2_,m3,m4=st.columns(4)
-        m1.metric("Precio $",f"${rsel['Precio $']:.4f}")
-        m2_.metric("RVOL",f"{rsel['RVOL']:.1f}x")
-        m3.metric("Vel 1min",f"{rsel['Vel 1m %']:+.2f}%")
-        m4.metric("Score 🐂",f"{rsel['Score 🐂']}/10")
-        m5,m6,m7,m8=st.columns(4)
-        m5.metric("RSI",f"{rsel['RSI']}")
-        m6.metric("SL $",f"${rsel['SL $']:.4f}")
-        m7.metric("TP $",f"${rsel['TP $']:.4f}")
-        m8.metric("R:R",f"{rsel['R:R']}x")
-        m9,m10=st.columns(2)
-        m9.metric("Δ 5min",f"{rsel['Δ 5m %']:+.2f}%")
-        m10.metric("Δ Día",f"{rsel['Δ Día %']:+.2f}%")
-        det=rsel.get("_det",{})
-        if det:
-            st.markdown("**📌 Motor de señal:**")
-            for k,v in det.items():
-                c=("#00ff88" if any(x in str(v) for x in ["▲","🚀","⚡","🔥","✅","🟢","🏆"])
-                   else("#ff4444" if any(x in str(v) for x in ["▼","💥","❌","🔴"])
-                        else "#ffc107"))
-                st.markdown(f'<span style="color:{c};font-size:.79em"><b>{k}</b>: {v}</span>',
-                            unsafe_allow_html=True)
+            if st.button("🔴 SELL MARKET", use_container_width=True):
+                ok,msg = execute_market_sell(t_op, qty_m)
+                st.success(msg) if ok else st.error(msg)
 
-elif st.session_state.last_scan is not None:
-    st.warning("""
-    ⚠️ Sin señales. Prueba:
-    1. Completa los **Pasos 2 y 3** para tener mejores candidatos
-    2. Baja **RVOL mínimo** a **1.0x**
-    3. Baja **Velocidad mínima** a **0.0%**
-    4. Los Yahoo Top Gainers y activos de 5min siempre pasan con filtros relajados
-    """)
+    with em2:
+        st.markdown(f"### 📊 {t_op} — Análisis WebSocket")
+        ev_op = evaluar_despegue(t_op)
+        st.markdown(force_bar(ev_op["force"], ev_op["despegue"]), unsafe_allow_html=True)
+        m1,m2_,m3,m4 = st.columns(4)
+        m1.metric("Precio $",  f"${precio_op:.4f}" if precio_op>0 else "—")
+        m2_.metric("Force",    f"{ev_op['force']}/100")
+        m3.metric("Spike 1m",  f"{ev_op['spike_1m']:+.2f}%")
+        m4.metric("RVOL",      f"{ev_op['rvol']:.1f}x")
+        m5,m6,m7,m8 = st.columns(4)
+        m5.metric("Vel 1min",  f"{ev_op['vel_1m']:+.2f}%")
+        m6.metric("Vel 5min",  f"{ev_op['vel_5m']:+.2f}%")
+        m7.metric("Ticks/s",   f"{ev_op['tps']:.1f}")
+        m8.metric("R:R",       f"1:{orden_op['rr']:.2f}")
+        if ev_op["detalles"]:
+            st.markdown("**📌 Motor de señal (WebSocket):**")
+            for k,v in ev_op["detalles"].items():
+                c = ("#ff4500" if "COHETE" in str(v) or "EXPLOSIÓN" in str(v)
+                     else "#ff8c00" if "FUERTE" in str(v) or "DESPEGUE" in str(v)
+                     else "#00ff88" if "✅" in str(v)
+                     else "#ff4444" if "▼" in str(v) or "Baj" in str(v)
+                     else "#8b949e")
+                st.markdown(f'<span style="color:{c};font-size:.79em">'
+                            f'<b>{k}</b>: {v}</span>', unsafe_allow_html=True)
 else:
-    st.markdown("""
-    ### 📋 Flujo completo para capturar despegues:
+    st.info("Activa el WebSocket para ver datos de precio en tiempo real.")
 
-    **Paso 1 — 🌐 Cargar universo** (una vez al día)
-    Carga las 5,000+ acciones de NYSE+NASDAQ+AMEX via Twelve Data
-
-    **Paso 2 — 🏆 Yahoo Top Gainers** (cada 10-15 min)
-    Trae los stocks que más suben HOY: SDOT +135%, BLZE +62%, CLRB +45%
-    Los mismos que Webull Top Gainers 1 Day
-
-    **Paso 3 — 🔥 Detector 5min** (cada 5-10 min)
-    Escanea todo el universo y detecta: JLHL +16%, NXTS +16%, MRDN +13%
-    Los mismos que Webull % Chg in 5Mins
-
-    **Paso 4 — 🚀 Escaneo final 1min**
-    Aplica Supertrend + RVOL + Velocidad + Aceleración sobre los candidatos
-    Genera Score 1-10 y SL/TP automático para Alpaca Paper
-
-    > **Repite pasos 2, 3 y 4 cada 5-10 minutos**
-    > durante el horario de mercado para no perderte ningún despegue.
-    """)
-
-# Auto-refresh
+# ─────────────────────────────────────────────────────────────────────
+#  AUTO-REFRESH
+# ─────────────────────────────────────────────────────────────────────
 if auto_ref:
-    time.sleep(ref_seg)
+    # Streamlit hace rerun cada 10 segundos para actualizar la UI
+    # El WebSocket sigue corriendo en background independientemente
+    time.sleep(10)
     st.rerun()
 
-st.markdown('<hr class="n">',unsafe_allow_html=True)
+st.markdown('<hr class="n">', unsafe_allow_html=True)
 st.markdown("""<div style="text-align:center;color:#8b949e;font-size:.69em;
 font-family:'Share Tech Mono',monospace">
-⚡ THUNDER RADAR V97 — UNIVERSO COMPLETO — PAPER TRADING — Solo uso educativo<br>
-Los resultados pasados no garantizan rendimientos futuros. Opera con responsabilidad.
-</div>""",unsafe_allow_html=True)
+⚡ THUNDER RADAR V99 — WEBSOCKET TICK-BY-TICK — ALPACA PAPER — Solo uso educativo<br>
+WebSocket: Alpaca IEX Feed (gratis) · Los resultados pasados no garantizan rendimientos futuros.
+</div>""", unsafe_allow_html=True)
